@@ -148,7 +148,7 @@ Shader "KuShader/VolumeLight"
 
         float GetRandomNum(float2 st)
         {
-            return frac(sin(dot(st.xy,float2(12.9898,78.233)))*43758.5453123);   
+            return frac(sin(dot(st.xy,float2(12.9898 + 5 * (_SinTime.w),78.233)))*43758.5453123);   
         }
 
         float RGB2Gray(float3 color)
@@ -174,6 +174,7 @@ Shader "KuShader/VolumeLight"
             return o;
         }
 
+        //Ë«±ßÂË²¨
         v2f_Blur vertBlurX(a2v v)
         {
             v2f_Blur o;
@@ -233,7 +234,8 @@ Shader "KuShader/VolumeLight"
             float randomBias = 0;
 
             #ifdef BLUE_NOISE
-                randomBias = SAMPLE_TEXTURE2D(_Noise,sampler_LinearClamp,i.uv).r * stepSize;
+                float2 uvOffset = i.uv + float2(_SinTime.x, _CosTime.x) * 0.1;
+                randomBias = SAMPLE_TEXTURE2D(_Noise,sampler_Noise,uvOffset).r * stepSize * 2.0;
             #endif
                 
             #ifdef WHITE_NOISE
@@ -265,7 +267,8 @@ Shader "KuShader/VolumeLight"
             return float4(intensity,1) * _ColorTint;
         }
 
-        float4 FragGaussianBlur(v2f_Blur i): SV_Target
+        //Ë«±ßÂË²¨
+        float4 FragBlur(v2f_Blur i): SV_Target
 	    {
 		    half4 color = float4(0, 0, 0, 0);
             
@@ -350,7 +353,7 @@ Shader "KuShader/VolumeLight"
             HLSLPROGRAM
 
             #pragma vertex vertBlurX
-            #pragma fragment FragGaussianBlur
+            #pragma fragment FragBlur
 
             ENDHLSL
             }
@@ -360,7 +363,7 @@ Shader "KuShader/VolumeLight"
             HLSLPROGRAM
 
             #pragma vertex vertBlurY
-            #pragma fragment FragGaussianBlur
+            #pragma fragment FragBlur
 
             ENDHLSL
             }

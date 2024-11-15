@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f62c9c65cf3354c93be831c8bc075510, type: 3}
   m_Name: SSAO
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   m_Settings:
     AOMethod: 1
     Downsample: 0
@@ -54,7 +54,7 @@ MonoBehaviour:
     shader: {fileID: 4800000, guid: 309e2fb3be3f0884d8215035c025ebbd, type: 3}
     activeff: 0
   - RenderPassName: VolumeLightRenderPass
-    renderPassEvent: 600
+    renderPassEvent: 550
     shader: {fileID: 4800000, guid: 943a2910b35c71749b3fc45561e28b7a, type: 3}
     activeff: 1
 --- !u!114 &11400000
