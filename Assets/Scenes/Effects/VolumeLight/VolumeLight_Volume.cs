@@ -1,4 +1,4 @@
-using Unity.Burst.CompilerServices;
+ï»¿using Unity.Burst.CompilerServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -6,17 +6,37 @@ using UnityEngine.Rendering.Universal;
 [System.Serializable, VolumeComponentMenu("Ku_PostProcessing/VolumeLight")]
 public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
 {
+    [Header("é™é‡‡æ ·è®¾ç½®")]
+    public ClampedIntParameter _DownSample = new ClampedIntParameter(1, 1, 16);
 
-    [Header("¹âÕÕÉèÖÃ")]
-    public ColorParameter _LightTint = new ColorParameter(Color.white, true);//Èç¹ûÓĞÁ½¸ötrue,ÔòÎªHDRÉèÖÃ
+    [Header("å…‰ç…§è®¾ç½®")]
+    public ColorParameter _LightTint = new ColorParameter(Color.white, true);//å¦‚æœæœ‰ä¸¤ä¸ªtrue,åˆ™ä¸ºHDRè®¾ç½®
     public ClampedFloatParameter _LightIntensity = new ClampedFloatParameter(0f, 0f,5f);
     public ClampedIntParameter _StepTimes = new ClampedIntParameter(0,0,128);
     public ClampedFloatParameter _PhaseG = new ClampedFloatParameter(0f, -1f, 1f);
     public ClampedFloatParameter _Extinction = new ClampedFloatParameter(0.7f, 0f, 1f);
 
-    [Header("Ä£ºıÉèÖÃ")]
+    [Header("æ¨¡ç³Šè®¾ç½®")]
     public ClampedFloatParameter _BlurSize = new ClampedFloatParameter(1f, 0.0f, 5f);
     public ClampedFloatParameter _RangeSigma = new ClampedFloatParameter(0.5f,0.0f,3f);
+
+    [Header("ä½“ç´ é›¾ç©ºé—´è®¾ç½®")]
+    public ClampedFloatParameter _FarPlane = new ClampedFloatParameter(128.0f, 1.0f, 1280.0f);
+    public Vector4Parameter _VolumeColor = new Vector4Parameter(new Vector4(0.2f, 0.6f, 1.0f, 1.0f));
+    public RenderTextureParameter _VolumeTexture = new RenderTextureParameter(null);
+    public RenderTextureParameter _IntegratedTexture = new RenderTextureParameter(null);
+    public RenderTextureParameter _ScatteringTexture = new RenderTextureParameter(null);
+
+    [Header("ä½“ç´ é›¾å±æ€§è®¾ç½®")]
+    public ClampedFloatParameter _GlobalFogDensity = new ClampedFloatParameter(1.0f, 0.001f, 2.0f);
+    public ClampedFloatParameter _HeightFallOff = new ClampedFloatParameter(0.5f, -5.0f, 5.0f);
+    public BoolParameter _UseFroxel = new BoolParameter(true);
+    public Vector3Parameter _GlobalScatter = new Vector3Parameter(new Vector3(0.2f,0.3f,1.0f));
+    public ClampedFloatParameter _GlobalAbsorb = new ClampedFloatParameter(0.2f, 0.001f, 1.0f);
+    public ColorParameter _GlobalAlbedo = new ColorParameter(new Color(0.2f,0.3f,0.6f));
+    public ClampedFloatParameter _GlobalExtinction = new ClampedFloatParameter(0.1f, 0.0f, 1.0f);
+    public ClampedFloatParameter _ReprojectWeight = new ClampedFloatParameter(0.8f,0.0f,1.0f);
+
 
     /// <inheritdoc/>
     public bool IsActive() => _LightIntensity.value != 0f || _StepTimes.value != 0;

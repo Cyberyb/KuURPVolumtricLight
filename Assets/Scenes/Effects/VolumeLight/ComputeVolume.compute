@@ -1,0 +1,264 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel CSScatteringLight
+#pragma kernel CSIntegration
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+#define UNITY_REVERSED_Z 1
+//#define UNIFORM_DEPTH
+//#define LOG_DEPTH
+
+#define _MAIN_LIGHT_SHADOWS
+//#define MAIN_LIGHT_CALCULATE_SHADOWS  //定义阴影采样
+#define _MAIN_LIGHT_SHADOWS_CASCADE //启用级联阴影
+
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/Shaders/PostProcessing/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+
+
+RWTexture3D<float4> _OutputAttribute;
+RWTexture3D<float4> _OutputIntegrated;
+RWTexture3D<float4> _InputScatteringLight;
+RWTexture3D<float4> _InputAttribute;
+RWTexture3D<float4> _OutputScatteringLight;
+
+//网格相关参数
+float4 _VolumeSize;
+float4 _LogarithmicDepthDecodingParams;
+float4 _LogarithmicEnpthDecodingParams;
+//基于Froxel的far和near重新计算
+float4 _ZParam;
+float4x4 _InverseV;
+float4x4 _InverseP;
+float4x4 _InverseVP;
+float4 _VolumeColor;
+float _Farplane;
+float _Nearplane;
+float _FovY;
+float _Aspect;
+
+//雾相关参数
+float _HeightFallOff;
+float _GlobalFogDensity;
+float3 _GlobalScatter;
+float _GlobalAbsorb;
+float _PhaseG;
+float3 _GlobalAlbedo;
+float _GlobalExtinction;
+
+float VolumeLuminance( float3 LinearColor )
+{
+	return dot( LinearColor, float3( 0.3, 0.59, 0.11 ) );
+}
+
+inline float EyeDepthToProj(float z, float4 ZBufferParams)
+{
+    return (1 / z - ZBufferParams.w) / ZBufferParams.z;
+}
+
+float GetRandomNum(float2 st)
+{
+    return frac(sin(dot(st.xy,float2(12.9898 + 5 * (_SinTime.w),78.233)))*43758.5453123);   
+}
+
+//DispatchThreadId转世界坐标，对数深度
+float3 GetGridCellPosByLog(uint3 id, float3 gridBias)
+{
+    float3 gridPos = float3(id) + gridBias;
+    float3 volumeSize = _VolumeSize.xyz;
+    float3 uvz = saturate(gridPos / volumeSize);
+    float viewZ = DecodeLogarithmicDepthGeneralized(uvz.z, _LogarithmicDepthDecodingParams);
+#if UNITY_REVERSED_Z
+            float devZ = (1 - EyeDepthToProj(viewZ, _ZParam)) * 2 - 1;
+#else
+    float devZ = EyeDepthToProj(viewZ, _ZParam) * 2 - 1;
+#endif
+    float4 positionWS = mul(_InverseVP, float4(uvz.xy * 2.0 - 1.0, devZ, 1.0));
+    positionWS /= positionWS.w;
+    return positionWS.xyz;
+}
+
+//DispatchThreadId转世界坐标，默认
+float3 GetGridCellPos(uint3 id)
+{
+    float3 GridPos = float3(id) + 0.5f;
+    float3 volumeSize = _VolumeSize.xyz;
+    float3 uvz = saturate(GridPos / volumeSize);
+    //float3 uvz = GridPos / volumeSize;
+    uvz.xy = uvz.xy * 2.0 - 1.0;
+#if UNITY_REVERSED_Z
+    float devZ = (1 - uvz.z) * 2.0 - 1.0;
+#else
+    float devZ = uvz.z * 2 - 1;
+#endif
+    float4 NDCPos = float4(uvz.xy,devZ, 1.0);
+    float4 positionWS = mul(_InverseVP, NDCPos);
+    positionWS /= positionWS.w;
+    return positionWS.xyz;  
+}
+
+//DispatchThreadId转世界坐标，均匀深度
+float3 GetGridCellPosByUniform(uint3 id, float3 gridBias)
+{
+    float3 gridPos = float3(id) + gridBias;
+    float3 volumeSize = _VolumeSize.xyz;
+    float3 uvz = saturate(gridPos / volumeSize);
+    uvz.xy = uvz.xy * 2.0 - 1.0;
+
+    float devZ = uvz.z * 2.0 - 1.0;
+
+    float4 positionVS;
+    positionVS.z = -(devZ + 1.0f) / 2.0f * (_Farplane - _Nearplane) - _Nearplane;
+    positionVS.x = uvz.x * (abs(positionVS.z) * tan((_FovY / 2.0f) * PI / 180.f)) * _Aspect;
+    positionVS.y = uvz.y * (abs(positionVS.z) * tan((_FovY / 2.0f) * PI / 180.f));
+    positionVS.w = 1.0f;
+    float4 positionWS = mul(_InverseV, positionVS);
+    return positionWS.xyz;
+}
+
+//获取世界空间中的雾密度
+float GetFogDensity(float3 pos)
+{
+    return _GlobalFogDensity * exp(-_HeightFallOff * pos.y);
+}
+
+//计算Phase Function（Schlick）
+float Phase(float3 inL, float3 outL)
+{
+    float k = 1.55 * _PhaseG - 0.55 * _PhaseG * _PhaseG * _PhaseG;
+    float a = 1 - k * k;
+    float cosTheta = dot(normalize(inL),normalize(outL));
+    float b = 4 * 3.1415 * (1 + k * cosTheta) * (1 + k * cosTheta);
+    return a/b;
+}
+
+//计算阴影项
+float GetVolumeShadow(float3 position)
+{
+    //float4 shadowPos = TransformWorldToShadowCoord(position); //把采样点的世界坐标转到阴影空间
+    //float intensity = MainLightRealtimeShadow(shadowPos); //进行shadow map采样  
+    //return intensity; //返回阴影值
+    return 0;
+}
+
+//计算直接光的散射
+float3 EvaluateLight_Directional(float3 worldPos)
+{
+    float3 startPos = _WorldSpaceCameraPos.xyz;
+    float3 rayDir = normalize(worldPos - startPos);
+
+    float3 lightDir = GetMainLight().direction;
+    float phase = Phase(lightDir ,-rayDir);
+    //float3 lightColor = GetMainLight().color;
+    //float volumeShadow = GetVolumeShadow(worldPos);
+    float4 shadowPos = TransformWorldToShadowCoord(worldPos);
+    Light mainLight = GetMainLight(shadowPos);
+
+
+    return mainLight.color.rgb * PI * phase  * mainLight.shadowAttenuation;
+    //return float3(1,0,0);
+}
+
+//存放属性
+[numthreads(8,8,8)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    if (id.x >= _VolumeSize.x || id.y >= _VolumeSize.y || id.z >= _VolumeSize.z)
+        return;
+    
+    //float3 uvz = (float3(id.xyz) + float3(0.5,0.5,0.5))/ float3(_VolumeSize.xyz);
+    //float depth = LinearEyeDepth(_CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture,float2(uvz.xy),0).r, _ZBufferParams);
+    //根据id定位grid的世界坐标
+    float3 gridBias = float3(0.5f,0.5f,0.5f);
+#ifdef UNIFORM_DEPTH 
+    float3 worldPosition = GetGridCellPosByUniform(id.xyz, gridBias);
+#else
+    float3 worldPosition = GetGridCellPosByLog(id.xyz, gridBias);
+#endif
+    
+    //获取密度
+    float fogDensity = GetFogDensity(worldPosition);
+    float extinction = _GlobalExtinction * fogDensity;
+    float3 scattering = _GlobalAlbedo * extinction;
+    //float absorb = max(extinction - VolumeLuminance(scattering),0);
+
+    //计算体积属性
+    
+    //if(worldPosition.z <= depth)
+        _OutputAttribute[id] = float4(scattering , extinction);
+    //else
+       //_OutputAttribute[id] = float4(1,0,0,1);
+    //_OutputAttribute[id] = float4(depth.rrr,1);
+    //_OutputAttribute[id] = float4(z.rrr,1); 
+}
+
+//计算In-Scattering
+[numthreads(8,8,8)]
+void CSScatteringLight(uint3 id : SV_DispatchThreadID)
+{
+    //Jitter采样
+    float3 gridBias = float3(0.5f,0.5f,0.5f);
+    float jitterZ = GetRandomNum(float2(id.xy));
+    float3 jitterBias = float3(gridBias.xy, jitterZ);
+
+#ifdef UNIFORM_DEPTH 
+    float3 worldPosition = GetGridCellPosByUniform(id.xyz, jitterBias);
+#else
+    float3 worldPosition = GetGridCellPosByLog(id.xyz, jitterBias);
+#endif
+    float3 dirLightScattering = EvaluateLight_Directional(worldPosition);
+
+    float4 scatterAndextinction = _InputAttribute[id];
+    //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
+    float3 scatter = scatterAndextinction.xyz * dirLightScattering;
+    _OutputScatteringLight[id] = float4(scatter, scatterAndextinction.a);
+}
+
+
+//积分
+[numthreads(8,8,1)]
+void CSIntegration(uint3 id : SV_DispatchThreadID)
+{
+    uint3 pos = uint3(id.xy,1);
+    float density = 0;
+    float3 preGirdBias = float3(0.5f,0.5f,-0.5f);
+    float3 gridBias = float3(0.5f,0.5f,0.5f);
+#ifdef UNIFORM_DEPTH 
+    float3 preWorldPos = GetGridCellPosByUniform(pos, preGirdBias);
+#else
+    float3 preWorldPos = GetGridCellPosByLog(pos, preGirdBias);
+#endif
+    float totalTransmittance = 1.0;
+    float3 totalRadiance = 0;
+    for(int z = 0; z < _VolumeSize.z; z++)
+    {
+        pos.z = z;
+        #ifdef UNIFORM_DEPTH 
+            float3 currWorldPos = GetGridCellPosByUniform(pos, gridBias);
+        #else
+            float3 currWorldPos = GetGridCellPosByLog(pos,gridBias);
+        #endif
+        float step_size = distance(currWorldPos, preWorldPos);
+        
+        preWorldPos = currWorldPos;
+        //积分过程
+        float4 voxel_data = _InputScatteringLight[pos];
+        float3 S = voxel_data.xyz;
+        float extinction = voxel_data.w;
+        float transmittance = exp(-extinction * step_size);
+
+        float3 scatteringIntegrated = (S-S * transmittance) / max(extinction,0.0001);
+        totalRadiance += scatteringIntegrated * totalTransmittance;
+        totalTransmittance *= transmittance;
+        
+        _OutputIntegrated[pos] = float4(totalRadiance,totalTransmittance);
+    }
+    
+}

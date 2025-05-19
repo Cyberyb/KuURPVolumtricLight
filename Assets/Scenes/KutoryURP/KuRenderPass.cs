@@ -1,4 +1,4 @@
-using UnityEditor;
+ï»¿using UnityEditor;
 using UnityEditor.Overlays;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering.RenderGraphModule;
@@ -8,84 +8,101 @@ using UnityEngine.Rendering.Universal;
 public class KuRenderPass : ScriptableRenderPass
 {
 
-    #region ×Ö¶Î
-    //½ÓÈ¡ÆÁÄ»Ô­Í¼µÄÊôĞÔÃû
+    #region å­—æ®µ
+    //æ¥å–å±å¹•åŸå›¾çš„å±æ€§å
     protected static readonly int MainTexId = Shader.PropertyToID("_MainTex");
-    //Ôİ´æÌùÍ¼µÄÊôĞÔÃû
+    //æš‚å­˜è´´å›¾çš„å±æ€§å
     protected static readonly int TempTargetId = Shader.PropertyToID("_TempTargetColorTint");
 
-    //CommandBufferµÄÃû³Æ
+    //CommandBufferçš„åç§°
     protected string cmdName;
-    //¼Ì³ĞVolumeComponentµÄ×é¼ş£¨¸¸×°×Ó£©
+    //ç»§æ‰¿VolumeComponentçš„ç»„ä»¶ï¼ˆçˆ¶è£…å­ï¼‰
     protected VolumeComponent volume;
-    //µ±Ç°PassÊ¹ÓÃµÄ²ÄÖÊ
+    //å½“å‰Passä½¿ç”¨çš„æè´¨
     protected Material material;
-    //µ±Ç°äÖÈ¾µÄÄ¿±ê
+    //å½“å‰æ¸²æŸ“çš„ç›®æ ‡
     protected RTHandle currentTarget;
     #endregion
 
-    #region º¯Êı
-    //-------------------------¹¹Ôì------------------------------------
+    #region å‡½æ•°
+    //-------------------------æ„é€ ------------------------------------
     public KuRenderPass(RenderPassEvent evt, Shader shader)
     {
         cmdName = this.GetType().Name + "_cmdName";
-        renderPassEvent = evt;//ÉèÖÃäÖÈ¾ÊÂ¼şÎ»ÖÃ
-        //²»´æÔÚÔò·µ»Ø
+        renderPassEvent = evt;//è®¾ç½®æ¸²æŸ“äº‹ä»¶ä½ç½®
+        //ä¸å­˜åœ¨åˆ™è¿”å›
         if (shader == null)
         {
-            Debug.LogError("²»´æÔÚ" + this.GetType().Name + "shader");
+            Debug.LogError("ä¸å­˜åœ¨" + this.GetType().Name + "shader");
             return;
         }
-        material = CoreUtils.CreateEngineMaterial(shader);//ĞÂ½¨²ÄÖÊ
+        material = CoreUtils.CreateEngineMaterial(shader);//æ–°å»ºæè´¨
     }
 
-    //----------------------×ÓÀà¼Ì³Ğµ«½ûÖ¹ÖØĞ´---------------------------
+    public KuRenderPass(RenderPassEvent evt, Shader shader, ComputeShader computeShader)
+    {
+        cmdName = this.GetType().Name + "_cmdName";
+        renderPassEvent = evt;//è®¾ç½®æ¸²æŸ“äº‹ä»¶ä½ç½®
+        //ä¸å­˜åœ¨åˆ™è¿”å›
+        if (shader == null)
+        {
+            Debug.LogError("ä¸å­˜åœ¨" + this.GetType().Name + "shader");
+            return;
+        }
+        material = CoreUtils.CreateEngineMaterial(shader);//æ–°å»ºæè´¨
+    }
+
+    //----------------------å­ç±»ç»§æ‰¿ä½†ç¦æ­¢é‡å†™---------------------------
     public void Setup(in RTHandle currentTarget)
     {
         this.currentTarget = currentTarget;
-        //this.Init();
+        this.Init();
     }
 
-
-    //UnityÃ¿Ö¡Ã¿¸öÉãÏñ»úµ÷ÓÃÒ»´Î
+    //Unityæ¯å¸§æ¯ä¸ªæ‘„åƒæœºè°ƒç”¨ä¸€æ¬¡
     public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
     {
-        //²ÄÖÊÊÇ·ñ´æÔÚ
+        //æè´¨æ˜¯å¦å­˜åœ¨
         if (material == null)
         {
-            Debug.LogError("²ÄÖÊ³õÊ¼»¯Ê§°Ü");
+            Debug.LogError("æè´¨åˆå§‹åŒ–å¤±è´¥");
             return;
         }
-        //ÉãÏñ»ú¹Ø±Õºó´¦Àí
+        //æ‘„åƒæœºå…³é—­åå¤„ç†
         if (!renderingData.cameraData.postProcessEnabled)
         {
-            //Debug.LogError("Ïà»úºó´¦ÀíÊÇ¹Ø±ÕµÄ£¡£¡£¡");
+            //Debug.LogError("ç›¸æœºåå¤„ç†æ˜¯å…³é—­çš„ï¼ï¼ï¼");
             return;
         }
 
-        var cmd = CommandBufferPool.Get(cmdName);//´Ó³ØÖĞ»ñÈ¡CMD
-        Render(cmd, ref renderingData);//½«¸ÃPassµÄäÖÈ¾Ö¸ÁîĞ´Èëµ½CMDÖĞ
-        context.ExecuteCommandBuffer(cmd);//Ö´ĞĞCMD
-        CommandBufferPool.Release(cmd);//ÊÍ·ÅCMD
-        //Debug.Log("Íê³ÉCMD");
+        var cmd = CommandBufferPool.Get(cmdName);//ä»æ± ä¸­è·å–CMD
+        Render(cmd, ref renderingData);//å°†è¯¥Passçš„æ¸²æŸ“æŒ‡ä»¤å†™å…¥åˆ°CMDä¸­
+        context.ExecuteCommandBuffer(cmd);//æ‰§è¡ŒCMD
+        CommandBufferPool.Release(cmd);//é‡Šæ”¾CMD
+        //Debug.Log("å®ŒæˆCMD");
     }
 
-    //UnityÖ´ĞĞRender PassÖ®Ç°µ÷ÓÃ
+    //Unityæ‰§è¡ŒRender Passä¹‹å‰è°ƒç”¨
     public override void Configure(CommandBuffer cmd, RenderTextureDescriptor cameraTextureDescriptor)
     {
 
     }
 
 
-    //UnityÔÚRender Pass Ö´ĞĞºóÏú»Ù²ÄÖÊºÍÁÙÊ±Render texture
+    //Unityåœ¨Render Pass æ‰§è¡Œåé”€æ¯æè´¨å’Œä¸´æ—¶Render texture
     public void Dispose()
     {
         //Object.Destroy(material);
         if (currentTarget != null) { currentTarget.Release(); }
     }
 
-    //-----------------------×ÓÀà±ØĞëÖØĞ´----------------------------------
-    /// Ğé·½·¨£¬¹©×ÓÀàÖØĞ´£¬ĞèÒª½«¸ÃPassµÄ¾ßÌåäÖÈ¾Ö¸ÁîĞ´Èëµ½CMDÖĞ
+    public override void OnCameraCleanup(CommandBuffer cmd)
+    {
+        base.OnCameraCleanup(cmd);
+    }
+
+    //-----------------------å­ç±»å¿…é¡»é‡å†™----------------------------------
+    /// è™šæ–¹æ³•ï¼Œä¾›å­ç±»é‡å†™ï¼Œéœ€è¦å°†è¯¥Passçš„å…·ä½“æ¸²æŸ“æŒ‡ä»¤å†™å…¥åˆ°CMDä¸­
     protected virtual void Render(CommandBuffer cmd, ref RenderingData renderingData) { }
 
     protected virtual void Init() { }

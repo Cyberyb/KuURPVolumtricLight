@@ -27,24 +27,66 @@ MonoBehaviour:
   m_Name: VolumeLight_Volume
   m_EditorClassIdentifier: 
   active: 1
+  _DownSample:
+    m_OverrideState: 1
+    m_Value: 1
   _LightTint:
     m_OverrideState: 1
-    m_Value: {r: 0.48194373, g: 0.78113204, b: 0.7431462, a: 1}
+    m_Value: {r: 0.20000002, g: 0.3019608, b: 0.6, a: 1}
   _LightIntensity:
     m_OverrideState: 1
-    m_Value: 3.2
+    m_Value: 1
   _StepTimes:
     m_OverrideState: 1
-    m_Value: 16
+    m_Value: 64
   _PhaseG:
     m_OverrideState: 1
-    m_Value: 0.664
+    m_Value: 0.4
   _Extinction:
     m_OverrideState: 1
-    m_Value: 0.153
+    m_Value: 0.336
   _BlurSize:
     m_OverrideState: 1
-    m_Value: 0
+    m_Value: 1
   _RangeSigma:
     m_OverrideState: 1
-    m_Value: 0.22
+    m_Value: 0.96
+  _FarPlane:
+    m_OverrideState: 1
+    m_Value: 64
+  _VolumeColor:
+    m_OverrideState: 0
+    m_Value: {x: 0.2, y: 0.6, z: 1, w: 1}
+  _VolumeTexture:
+    m_OverrideState: 1
+    m_Value: {fileID: 8400000, guid: 28b7233e9ea88de4bb8bfc40555e4e24, type: 2}
+  _IntegratedTexture:
+    m_OverrideState: 1
+    m_Value: {fileID: 8400000, guid: 6102882a1e23fb44f8fe8ebfe9e6c99d, type: 2}
+  _ScatteringTexture:
+    m_OverrideState: 1
+    m_Value: {fileID: 8400000, guid: 5ea52cc5e738e584c9ab810d66f32fe2, type: 2}
+  _GlobalFogDensity:
+    m_OverrideState: 1
+    m_Value: 0.67
+  _HeightFallOff:
+    m_OverrideState: 1
+    m_Value: 1.26
+  _UseFroxel:
+    m_OverrideState: 1
+    m_Value: 1
+  _GlobalScatter:
+    m_OverrideState: 1
+    m_Value: {x: 1, y: 1, z: 1}
+  _GlobalAbsorb:
+    m_OverrideState: 1
+    m_Value: 0.001
+  _GlobalAlbedo:
+    m_OverrideState: 1
+    m_Value: {r: 0.41709682, g: 0.86346775, b: 0.9716981, a: 1}
+  _GlobalExtinction:
+    m_OverrideState: 1
+    m_Value: 0.689
+  _ReprojectWeight:
+    m_OverrideState: 1
+    m_Value: 0.7

@@ -1,4 +1,4 @@
-Shader "KuShader/VolumeLight"
+ï»¿Shader "KuShader/VolumeLight"
 {
     Properties
     {
@@ -10,8 +10,9 @@ Shader "KuShader/VolumeLight"
 
 	HLSLINCLUDE
 
-        #define MAIN_LIGHT_CALCULATE_SHADOWS  //¶¨ÒåÒõÓ°²ÉÑù
-        #define _MAIN_LIGHT_SHADOWS_CASCADE //ÆôÓÃ¼¶ÁªÒõÓ°
+        #define MAIN_LIGHT_CALCULATE_SHADOWS  //å®šä¹‰é˜´å½±é‡‡æ ·
+        #define _MAIN_LIGHT_SHADOWS_CASCADE //å¯ç”¨çº§è”é˜´å½±
+        
 		
 		#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
@@ -27,7 +28,7 @@ Shader "KuShader/VolumeLight"
         //TEXTURE2D(_CameraDepthTexture);
         //SAMPLER(sampler_CameraDepthTexture);
 
-        // ¶¥µã×ÅÉ«Æ÷µÄÊäÈë
+        // é¡¶ç‚¹ç€è‰²å™¨çš„è¾“å…¥
         struct a2v
         {
             uint vertexID : SV_VertexID;
@@ -36,7 +37,7 @@ Shader "KuShader/VolumeLight"
             UNITY_VERTEX_INPUT_INSTANCE_ID
         };
 
-        // ¶¥µã×ÅÉ«Æ÷µÄÊä³ö
+        // é¡¶ç‚¹ç€è‰²å™¨çš„è¾“å‡º
         struct v2f
         {
             float4 positionCS : SV_POSITION;
@@ -59,6 +60,12 @@ Shader "KuShader/VolumeLight"
         TEXTURE2D(_GrabTexture);
         SAMPLER(sampler_GrabTexture);
 
+        TEXTURE2D(_StencilTexture);
+        SAMPLER(sampler_StencilTexture);
+
+        TEXTURE3D(_VolumeTexture);
+        SAMPLER(sampler_VolumeTexture);
+
 
         float4 _ColorTint;
         float _Intensity;
@@ -68,6 +75,16 @@ Shader "KuShader/VolumeLight"
         float4 _BlurOffsetY;
         int _NoiseLoaded;
         float _RangeSigma;
+        float4x4 _InvV;
+        float4x4 _InvP;
+        float4x4 _World2Volume;
+        float4x4 _PreVP;
+        float4 _LogarithmicDepthEncodingParams;
+        float _FovY;
+        float _Aspect;
+        float _Farplane;
+        float _Nearplane;
+        float _ReprojectWeight;
 
         TEXTURE2D(_Noise);
         SAMPLER(sampler_Noise);
@@ -79,16 +96,19 @@ Shader "KuShader/VolumeLight"
         #define MAX_RAY_LENGTH 20
         #define random(seed) frac(sin(seed * 641.5467987313875 + 1.943856175))
         #define BLUE_NOISE
+        //#define UNIFORM_DEPTH
+        
+        //#define MUTISAMPLESHADOW
         //#define WHITE_NOISE
         //#define NO_NOISE
         
         float3 GetWorldPosition(float2 uv, float3 viewVec, out float depth, out float linearDepth)
         {
-            depth = SAMPLE_TEXTURE2D_X(_CameraDepthTexture,sampler_CameraDepthTexture,uv).r;//²ÉÑùÉî¶ÈÍ¼
-            depth = Linear01Depth(depth, _ZBufferParams); //×ª»»ÎªÏßĞÔÉî¶È
+            depth = SAMPLE_TEXTURE2D_X(_CameraDepthTexture,sampler_CameraDepthTexture,uv).r;//é‡‡æ ·æ·±åº¦å›¾
+            depth = Linear01Depth(depth, _ZBufferParams); //è½¬æ¢ä¸ºçº¿æ€§æ·±åº¦
             linearDepth = LinearEyeDepth(depth,_ZBufferParams);
-            float3 viewPos = viewVec * depth; //»ñÈ¡Êµ¼ÊµÄ¹Û²ì¿Õ¼ä×ø±ê£¨²åÖµºó£©
-            float3 worldPos = mul(unity_CameraToWorld, float4(viewPos,1)).xyz; //¹Û²ì¿Õ¼ä-->ÊÀ½ç¿Õ¼ä×ø±ê
+            float3 viewPos = viewVec * depth; //è·å–å®é™…çš„è§‚å¯Ÿç©ºé—´åæ ‡ï¼ˆæ’å€¼åï¼‰
+            float3 worldPos = mul(unity_CameraToWorld, float4(viewPos,1)).xyz; //è§‚å¯Ÿç©ºé—´-->ä¸–ç•Œç©ºé—´åæ ‡
             return worldPos;
         }
 
@@ -107,20 +127,24 @@ Shader "KuShader/VolumeLight"
 
         float3 DepthToWorldPosition(float2 screenPos)
         {
-            //´«ÈëµÄscreenPos·¶Î§ÔÚ[0,1]
-            float depth = Linear01Depth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,screenPos),_ZBufferParams);
+            //ä¼ å…¥çš„screenPosèŒƒå›´åœ¨[0,1]
+            float eyedepth = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,screenPos),_ZBufferParams);
             
             float2 ndcPosXY = screenPos * 2 -1;
-            float3 clipPos = float3(ndcPosXY.x, ndcPosXY.y, 1)* _ProjectionParams.z;
+            //float3 clipPos = float3(ndcPosXY.x, ndcPosXY.y, 1)* _ProjectionParams.z;
+            float3 clipPos = float3(ndcPosXY.x, ndcPosXY.y, 1)* eyedepth;
 
-            float3 viewPos = mul(unity_CameraInvProjection, clipPos.xyzz).xyz * depth;
+            float3 viewPos = mul(unity_CameraInvProjection, clipPos.xyzz).xyz;
             float3 worldPos = mul(UNITY_MATRIX_I_V, float4(viewPos,1)).xyz;
+
+            //float3 viewPos = mul(_InvP, clipPos.xyzz).xyz;
+            //float3 worldPos = mul(_InvV, float4(viewPos,1)).xyz;
             return worldPos;
         }
 
         float extinctionAt(float3 pos)
         {
-            //Ïû¹âÏµÊı£¬ÔÚ¾ùÔÈ½éÖÊÖĞÎª³£Êı
+            //æ¶ˆå…‰ç³»æ•°ï¼Œåœ¨å‡åŒ€ä»‹è´¨ä¸­ä¸ºå¸¸æ•°
             return _Extinction;
         }
 
@@ -141,9 +165,30 @@ Shader "KuShader/VolumeLight"
 
         float GetLightAttenuation(float3 position)
         {
-            float4 shadowPos = TransformWorldToShadowCoord(position); //°Ñ²ÉÑùµãµÄÊÀ½ç×ø±ê×ªµ½ÒõÓ°¿Õ¼ä
-            float intensity = MainLightRealtimeShadow(shadowPos); //½øĞĞshadow map²ÉÑù
-            return intensity; //·µ»ØÒõÓ°Öµ
+        #ifdef MUTISAMPLESHADOW
+            float bias = 0.1f;
+            float4 shadowPos[6];
+            shadowPos[0] = TransformWorldToShadowCoord(position + float3(bias,0,0));
+            shadowPos[1] = TransformWorldToShadowCoord(position + float3(-bias,0,0));
+            shadowPos[2] = TransformWorldToShadowCoord(position + float3(0,bias,0));
+            shadowPos[3] = TransformWorldToShadowCoord(position + float3(0,-bias,0));
+            shadowPos[4] = TransformWorldToShadowCoord(position + float3(0,0,bias));
+            shadowPos[5] = TransformWorldToShadowCoord(position + float3(0,0,-bias));
+
+            float intensity = 0;
+            for(int i = 0; i < 6;i++)
+            {
+                intensity += MainLightRealtimeShadow(shadowPos[i]);
+            }
+            intensity /= 6.0;
+
+
+        #else
+            float4 shadowPos = TransformWorldToShadowCoord(position); //æŠŠé‡‡æ ·ç‚¹çš„ä¸–ç•Œåæ ‡è½¬åˆ°é˜´å½±ç©ºé—´
+            float intensity = MainLightRealtimeShadow(shadowPos); //è¿›è¡Œshadow mapé‡‡æ ·
+        #endif
+            
+            return intensity; //è¿”å›é˜´å½±å€¼
         }
 
         float GetRandomNum(float2 st)
@@ -156,12 +201,47 @@ Shader "KuShader/VolumeLight"
             return 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
         }
 
+        float3 ReprojectVolumeXYZ(float3 worldPos)
+        {
+            float4 clipPos = mul(_PreVP, float4(worldPos.xyz,1.0));
+            clipPos.xyz = clipPos.xyz / clipPos.w;
+            clipPos.xyz = clipPos.xyz * 0.5 + 0.5;
+            float z = EncodeLogarithmicDepthGeneralized(clipPos.w, _LogarithmicDepthEncodingParams);
+            return saturate(float3(clipPos.xy, z));
+        }
+
+        float3 GetVolumetricFogColor(float3 worldPos, float3 backwardColor)
+        {
+            float4 ClipPos = mul(_World2Volume, float4(worldPos,1.0));
+            #ifdef UNIFORM_DEPTH
+                float z = ((ClipPos.w - _Nearplane) * 2.0 / (_Farplane - _Nearplane)) - 1.0;
+                z = z * 0.5 + 0.5;  
+            #else
+                float z = EncodeLogarithmicDepthGeneralized(ClipPos.w, _LogarithmicDepthEncodingParams);
+            #endif
+            float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, z));
+
+
+            float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
+
+            //é‡æŠ•å½±ï¼Œè·å–ä¸Šä¸€å¸§çš„æ•£å°„ä¸æ¶ˆå…‰ç³»æ•°
+            float3 preuvz = ReprojectVolumeXYZ(worldPos);
+            float4 preInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, preuvz);
+
+            float4 inScatteringAndTransmittance = _ReprojectWeight * preInScatteringAndTransmittance + (1.0f - _ReprojectWeight) * currInScatteringAndTransmittance;
+
+            return backwardColor * inScatteringAndTransmittance.a + inScatteringAndTransmittance.rgb;
+            //return uvz ;
+        }
+
+
+
         v2f vert(a2v v)
         {
             v2f o;
             UNITY_SETUP_INSTANCE_ID(v);
 
-            float4 pos2 = TransformObjectToHClip(v.positionOS);
+            //float4 pos2 = TransformObjectToHClip(v.positionOS);
 
             float4 pos = GetFullScreenTriangleVertexPosition(v.vertexID);
             float2 uv = GetFullScreenTriangleTexCoord(v.vertexID);
@@ -169,12 +249,12 @@ Shader "KuShader/VolumeLight"
             //o.positionCS = pos2;
             o.positionCS = pos;
             o.uv = uv;
-            //¼ÆËãÆë´Î×ø±êÏÂµÄÆÁÄ»×ø±ê£¬·¶Î§[0,w]
+            //è®¡ç®—é½æ¬¡åæ ‡ä¸‹çš„å±å¹•åæ ‡ï¼ŒèŒƒå›´[0,w]
             o.screen_uv = ComputeScreenPos(o.positionCS);
             return o;
         }
 
-        //Ë«±ßÂË²¨
+        //åŒè¾¹æ»¤æ³¢
         v2f_Blur vertBlurX(a2v v)
         {
             v2f_Blur o;
@@ -210,21 +290,56 @@ Shader "KuShader/VolumeLight"
 
             return o;
         }
+        //ç”¨äºé¢„æ¸²æŸ“ä½“ç§¯å…‰stencil buffer
+        float fragStencil(v2f i): SV_Target
+        {
+            //ä»å±å¹•åæ ‡åˆ°å±å¹•UV
+            i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
+            //æ·±åº¦é‡å»ºä¸–ç•Œåæ ‡
+            float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
+            //é‡‡æ ·èµ·ç‚¹ä¸ºæ‘„åƒæœºä¸–ç•Œåæ ‡
+            float3 startPos = _WorldSpaceCameraPos.xyz;
+            //æ­¥è¿›çš„æ–¹å‘
+            float3 rayDir = normalize(worldPos - startPos);
+            //å…‰çº¿æ­¥è¿›çš„é•¿åº¦
+            float rayLength = min(length(worldPos - startPos), MAX_RAY_LENGTH);
 
+            float stepSize = rayLength / _StepTimes;
+
+            float lightStencil = 0;
+
+            for(float distance = 0; distance < rayLength; distance += stepSize)
+            {
+                float3 curPos = startPos + distance * rayDir;
+                
+                lightStencil += GetLightAttenuation(curPos) * stepSize;
+            }
+            return step(0.1f, lightStencil);
+        }
+
+        //ç”¨äºæ¸²æŸ“ä½“ç§¯å…‰çš„ä¸»è¦Fragment Shader
         float4 frag(v2f i) : SV_Target
         {
             float depth = 0;
             float linearDepth = Linear01Depth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,i.screen_uv.xy),_ZBufferParams);;
-            //float3 worldPos = GetWorldPosition(i.uv, i.viewVec, depth, linearDepth); //ÏñËØµÄÊÀ½ç×ø±ê
+            //float3 worldPos = GetWorldPosition(i.uv, i.viewVec, depth, linearDepth); //åƒç´ çš„ä¸–ç•Œåæ ‡
             
+            //ä»å±å¹•åæ ‡åˆ°å±å¹•UV
             i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
 
-            float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
+            //é‡‡æ ·maskï¼Œå†³å®šé‡‡æ ·åŒºåŸŸ
+            float mask = SAMPLE_TEXTURE2D(_StencilTexture,sampler_StencilTexture,i.screen_uv.xy).r;
+            if(mask < 0.99f) 
+                return float4(0,0,0,0);
 
+
+            //æ·±åº¦é‡å»ºä¸–ç•Œåæ ‡
+            float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
+            //é‡‡æ ·èµ·ç‚¹ä¸ºæ‘„åƒæœºä¸–ç•Œåæ ‡
             float3 startPos = _WorldSpaceCameraPos.xyz;
-            //²½½øµÄ·½Ïò
+            //æ­¥è¿›çš„æ–¹å‘
             float3 rayDir = normalize(worldPos - startPos);
-            //¹âÏß²½½øµÄ³¤¶È
+            //å…‰çº¿æ­¥è¿›çš„é•¿åº¦
             float rayLength = min(length(worldPos - startPos), MAX_RAY_LENGTH);
 
             float stepSize = rayLength / _StepTimes;
@@ -243,15 +358,18 @@ Shader "KuShader/VolumeLight"
             #endif
 
             startPos += randomBias;
+            float3 lightDir = GetMainLight().direction;
+            float phase = Phase(lightDir ,-rayDir);
+
             for(float distance = 0; distance < rayLength; distance += stepSize)
             {
                 float3 curPos = startPos + distance * rayDir;
-                //ÓĞÒ»ÖÖ²åÖµÇó·¨lerp(startPos, startPos + rayDir * rayLength, i);
+                //æœ‰ä¸€ç§æ’å€¼æ±‚æ³•lerp(startPos, startPos + rayDir * rayLength, i);
 
-                float3 lightDir = GetMainLight().direction;
+                
                 transmittance *= exp(-stepSize * extinctionAt(curPos));
-
-                float atten = transmittance * GetLightAttenuation(curPos) * _Intensity * Phase(lightDir,-rayDir) * stepSize;
+                
+                float atten = transmittance * GetLightAttenuation(curPos) * _Intensity * phase * stepSize;
                 float3 light = atten;
                 intensity += light;
             }
@@ -261,13 +379,13 @@ Shader "KuShader/VolumeLight"
 
 
             //return float4(intensity,1);
-            //return float4(1,1,0,1);
+            //return float4(mask,0,0,1);
 
             float4 cameraColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,i.uv);
             return float4(intensity,1) * _ColorTint;
         }
 
-        //Ë«±ßÂË²¨
+        //åŒè¾¹æ»¤æ³¢
         float4 FragBlur(v2f_Blur i): SV_Target
 	    {
 		    half4 color = float4(0, 0, 0, 0);
@@ -296,7 +414,7 @@ Shader "KuShader/VolumeLight"
             {
                 float3 currColor = sample_Color[i];
                 float valueFactor = (-colorDistance[i])/(2 * _RangeSigma* _RangeSigma + 0.0001);
-                float valueWeight = (1 / (2 * 3.1415 * _RangeSigma)) * exp(valueFactor);//È¨ÖØ
+                float valueWeight = (1 / (2 * 3.1415 * _RangeSigma)) * exp(valueFactor);//æƒé‡
                 weightSum += valueWeight * space_Weight[i];
 
                 color3 += currColor * space_Weight[i] * valueWeight;
@@ -318,12 +436,34 @@ Shader "KuShader/VolumeLight"
 		    return color;
 	    }
 
-        //ºÏ²¢Ô´Í¼ºÍÌå»ı¹â
+        //åˆå¹¶æºå›¾å’Œä½“ç§¯å…‰
         float4 frag_blend(v2f i):SV_Target
         {
+            
             float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
+
+            float depth =  LinearEyeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,i.screen_uv.xy), _ZBufferParams);
+        
+            float transmittance = exp(-depth * _Extinction);
             float4 bluredColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,i.uv);
-            return bluredColor + sourceColor;
+            return bluredColor + sourceColor * transmittance;
+
+        }
+
+        //ä½¿ç”¨Voxelæ–¹æ³•è¿›è¡Œæ¸²æŸ“
+        float4 frag_voxel(v2f i):SV_Target
+        {
+            
+            float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
+
+            //ä»å±å¹•åæ ‡åˆ°å±å¹•UV
+            i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
+
+            //æ·±åº¦é‡å»ºä¸–ç•Œåæ ‡
+            float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
+            float3 volumeFogColor = GetVolumetricFogColor(worldPos,sourceColor.rgb);
+
+            return float4(volumeFogColor,1.0);
         }
 
 
@@ -335,6 +475,18 @@ Shader "KuShader/VolumeLight"
         Tags { "RenderType"="Opaque" "RenderPipeline" = "UniversalPipeline"}
         LOD 100
         ZTest Always ZWrite Off Cull Off
+
+        Pass
+        {
+            Name "ComputeLightStencil"
+
+            HLSLPROGRAM
+            
+            #pragma vertex vert
+            #pragma fragment fragStencil
+            
+            ENDHLSL
+        }
 
         Pass
         {
@@ -377,5 +529,18 @@ Shader "KuShader/VolumeLight"
 
             ENDHLSL
             }
+
+        Pass{
+            Name "VoxelFog"
+            HLSLPROGRAM
+
+            #pragma vertex vert
+            #pragma fragment frag_voxel
+
+            ENDHLSL
+
+            }
+            
+            
     }
 }

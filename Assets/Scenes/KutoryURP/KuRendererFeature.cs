@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -10,23 +10,27 @@ public class KuRendererFeature : ScriptableRendererFeature
     public class RenderPassList
     {
         public string RenderPassName;
-        //Ö¸¶¨¸ÃRendererFeatureÔÚäÖÈ¾Á÷³ÌµÄÄÄ¸öÊ±»ú²åÈë
+        //æŒ‡å®šè¯¥RendererFeatureåœ¨æ¸²æŸ“æµç¨‹çš„å“ªä¸ªæ—¶æœºæ’å…¥
         public RenderPassEvent renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
-        //Ö¸¶¨Ò»¸öshader
+        //æŒ‡å®šä¸€ä¸ªshader
         public Shader shader;
-        //ÊÇ·ñ¿ªÆô
+        //æ˜¯å¦å¼€å¯
         public bool activeff;
+        //è®¡ç®—ç€è‰²å™¨
+        public ComputeShader computeShader;
 
         public KuRenderPass renderPass;
+
+
     }
     public RenderPassList[] renderPassList;
 
 
     /*
-     UnityÔÚÒÔÏÂÊÂ¼şÉÏµ÷ÓÃCreate()
-    1.Renderer Feature Ê×´Î¼ÓÔØ
-    2.ÆôÓÃ»òÕß½ûÓÃRenderer Feature
-    3.ÔÚinspectorÖĞ¸ü¸ÄRenderer FeatureµÄproperty
+     Unityåœ¨ä»¥ä¸‹äº‹ä»¶ä¸Šè°ƒç”¨Create()
+    1.Renderer Feature é¦–æ¬¡åŠ è½½
+    2.å¯ç”¨æˆ–è€…ç¦ç”¨Renderer Feature
+    3.åœ¨inspectorä¸­æ›´æ”¹Renderer Featureçš„property
      */
     public override void Create()
     {
@@ -40,12 +44,12 @@ public class KuRendererFeature : ScriptableRendererFeature
             {
                 Debug.Log("Create render pass :" + i);
 
-                renderPassList[i].renderPass = Activator.CreateInstance(Type.GetType(renderPassList[i].RenderPassName), renderPassList[i].renderPassEvent, renderPassList[i].shader) as KuRenderPass;
+                renderPassList[i].renderPass = Activator.CreateInstance(Type.GetType(renderPassList[i].RenderPassName), renderPassList[i].renderPassEvent, renderPassList[i].shader, renderPassList[i].computeShader) as KuRenderPass;
             }
         }
     }
 
-    //UnityÃ¿Ö¡Ã¿¸öCameraµ÷ÓÃÒ»´Î£¬¸Ã·½·¨½«Scriptable RenderPassÊµÀı×¢Èëµ½Scriptable RendererÖĞ
+    //Unityæ¯å¸§æ¯ä¸ªCameraè°ƒç”¨ä¸€æ¬¡ï¼Œè¯¥æ–¹æ³•å°†Scriptable RenderPasså®ä¾‹æ³¨å…¥åˆ°Scriptable Rendererä¸­
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         if (renderingData.cameraData.cameraType == CameraType.Game || renderingData.cameraData.cameraType == CameraType.SceneView)
