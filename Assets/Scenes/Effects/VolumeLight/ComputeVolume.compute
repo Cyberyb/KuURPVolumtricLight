@@ -154,7 +154,7 @@ float3 EvaluateLight_Directional(float3 worldPos)
     float3 rayDir = normalize(worldPos - startPos);
 
     float3 lightDir = GetMainLight().direction;
-    float phase = Phase(lightDir ,-rayDir);
+    float phase = Phase(-lightDir ,rayDir);
     //float3 lightColor = GetMainLight().color;
     //float volumeShadow = GetVolumeShadow(worldPos);
     float4 shadowPos = TransformWorldToShadowCoord(worldPos);

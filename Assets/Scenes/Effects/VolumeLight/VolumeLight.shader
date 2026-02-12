@@ -73,7 +73,6 @@
         float _Extinction;
         float4 _BlurOffsetX;
         float4 _BlurOffsetY;
-        int _NoiseLoaded;
         float _RangeSigma;
         float4x4 _InvV;
         float4x4 _InvP;
@@ -86,8 +85,8 @@
         float _Nearplane;
         float _ReprojectWeight;
 
-        TEXTURE2D(_Noise);
-        SAMPLER(sampler_Noise);
+        TEXTURE2D(_JitterTexture);
+        SAMPLER(sampler__JitterTexture);
 
         //float3 _worldCameraPos;
         int _StepTimes;
@@ -350,7 +349,7 @@
 
             #ifdef BLUE_NOISE
                 float2 uvOffset = i.uv + float2(_SinTime.x, _CosTime.x) * 0.1;
-                randomBias = SAMPLE_TEXTURE2D(_Noise,sampler_Noise,uvOffset).r * stepSize * 2.0;
+                randomBias = SAMPLE_TEXTURE2D(_JitterTexture,sampler__JitterTexture,uvOffset).r * stepSize * 2.0;
             #endif
                 
             #ifdef WHITE_NOISE

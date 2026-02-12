@@ -29,6 +29,9 @@ public class VolumeLightRenderPass : KuRenderPass
     private RenderTextureDescriptor stencilDescriptor;
     public RTHandle stencilHandle;
 
+    //Jitter纹理
+    public Texture jitterTexture;
+
     //计算着色器
     public ComputeShader kucomputeShader;
     //体积RenderTexture
@@ -43,10 +46,7 @@ public class VolumeLightRenderPass : KuRenderPass
     private Matrix4x4 preVP;
     private Matrix4x4 VP;
     
-    
-
-    public Texture2D noiseTexture = new Texture2D(470,470);
-    private bool isLoadedTexture = false;
+   
 
 
     VolumeStack stack = VolumeManager.instance.stack;
@@ -67,12 +67,6 @@ public class VolumeLightRenderPass : KuRenderPass
         
 
         downSampleDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
-
-        //获取外部图片
-        byte[] temp = File.ReadAllBytes(Application.dataPath + "/Scenes/Effects/VolumeLight/LDR_RGBA_0.png");
-        isLoadedTexture = noiseTexture.LoadImage(temp);
-        noiseTexture.Apply();
-        noiseTexture.hideFlags = HideFlags.DontSave;
 
         if(computeShader != null)
             kucomputeShader = computeShader;
@@ -118,6 +112,8 @@ public class VolumeLightRenderPass : KuRenderPass
         volumeTexture = ((VolumeLight_Volume)volume)._VolumeTexture.value;
         scatteringTexture = ((VolumeLight_Volume)volume)._ScatteringTexture.value;
         integratedTexture = ((VolumeLight_Volume)volume)._IntegratedTexture.value;
+
+        jitterTexture = ((VolumeLight_Volume)volume)._JitterTexture.value;
     }
 
     protected override void Render(CommandBuffer cmd, ref RenderingData renderingData)
@@ -248,6 +244,7 @@ public class VolumeLightRenderPass : KuRenderPass
         material.SetTexture("_StencilTexture", stencilHandle);
 
         material.SetTexture("_VolumeTexture", integratedTexture);
+        material.SetTexture("_JitterTexture", jitterTexture);
 
         material.SetFloat("_FovY", renderingData.cameraData.camera.fieldOfView);
         material.SetFloat("_Aspect", renderingData.cameraData.camera.aspect);
@@ -255,13 +252,6 @@ public class VolumeLightRenderPass : KuRenderPass
         material.SetFloat("_Nearplane", renderingData.cameraData.camera.nearClipPlane);
         material.SetMatrix("_PreVP", preVP);
         material.SetFloat("_ReprojectWeight", ((VolumeLight_Volume)volume)._ReprojectWeight.value);
-
-        if (isLoadedTexture)
-        {
-            material.SetTexture("_Noise", noiseTexture);
-            material.SetInt("_NoiseLoaded", 1);
-        }
-        else { material.SetInt("_NoiseLoaded", 0); }
             
     }
     private void UpdateComputeValues(ref CommandBuffer cmd, ref RenderingData renderingData)
