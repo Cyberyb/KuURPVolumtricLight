@@ -45,6 +45,7 @@ float _Aspect;
 
 //雾相关参数
 float _HeightFallOff;
+float _FogBaseHeight;
 float _GlobalFogDensity;
 float3 _GlobalScatter;
 float _GlobalAbsorb;
@@ -125,7 +126,7 @@ float3 GetGridCellPosByUniform(uint3 id, float3 gridBias)
 //获取世界空间中的雾密度
 float GetFogDensity(float3 pos)
 {
-    return _GlobalFogDensity * exp(-_HeightFallOff * pos.y);
+    return _GlobalFogDensity * exp(-_HeightFallOff * (pos.y - _FogBaseHeight));
 }
 
 //计算Phase Function（Schlick）

@@ -33,6 +33,7 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     [Header("体素雾属性设置")]
     public ClampedFloatParameter _GlobalFogDensity = new ClampedFloatParameter(1.0f, 0.001f, 2.0f);
     public ClampedFloatParameter _HeightFallOff = new ClampedFloatParameter(0.5f, -5.0f, 5.0f);
+    public ClampedFloatParameter _FogBaseHeight = new ClampedFloatParameter(0.0f, -100.0f, 100.0f);
     public BoolParameter _UseFroxel = new BoolParameter(true);
     public Vector3Parameter _GlobalScatter = new Vector3Parameter(new Vector3(0.2f,0.3f,1.0f));
     public ClampedFloatParameter _GlobalAbsorb = new ClampedFloatParameter(0.2f, 0.001f, 1.0f);

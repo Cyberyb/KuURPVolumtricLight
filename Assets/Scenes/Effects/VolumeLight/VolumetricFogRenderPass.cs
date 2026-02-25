@@ -7,9 +7,9 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using static Unity.Burst.Intrinsics.X86.Avx;
 
-public class VolumeLightRenderPass : KuRenderPass
+public class VolumetricFogRenderPass : KuRenderPass
 {
-    ProfilingSampler m_ProfilingSampler = new ProfilingSampler("Kutory Volumetric Light");
+    ProfilingSampler m_ProfilingSampler = new ProfilingSampler("Kutory Volumetric Fog");
     private RenderTextureDescriptor textureDescriptor;
     public RTHandle textureHandle;
 
@@ -52,7 +52,7 @@ public class VolumeLightRenderPass : KuRenderPass
     VolumeStack stack = VolumeManager.instance.stack;
 
     // Start is called before the first frame update
-    public VolumeLightRenderPass(RenderPassEvent evt, Shader shader, ComputeShader computeShader) : base(evt, shader, computeShader)
+    public VolumetricFogRenderPass(RenderPassEvent evt, Shader shader, ComputeShader computeShader) : base(evt, shader, computeShader)
     {
         textureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
 
@@ -278,6 +278,7 @@ public class VolumeLightRenderPass : KuRenderPass
         cmd.SetGlobalVector("_VolumeColor", ((VolumeLight_Volume)volume)._VolumeColor.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_GlobalFogDensity", ((VolumeLight_Volume)volume)._GlobalFogDensity.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_HeightFallOff", ((VolumeLight_Volume)volume)._HeightFallOff.value);
+        cmd.SetComputeFloatParam(kucomputeShader, "_FogBaseHeight", ((VolumeLight_Volume)volume)._FogBaseHeight.value);
 
         cmd.SetComputeFloatParam(kucomputeShader, "_FovY", renderingData.cameraData.camera.fieldOfView);
         cmd.SetComputeFloatParam(kucomputeShader, "_Aspect", renderingData.cameraData.camera.aspect);

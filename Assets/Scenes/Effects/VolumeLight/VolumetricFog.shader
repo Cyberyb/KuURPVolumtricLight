@@ -1,4 +1,4 @@
-﻿Shader "KuShader/VolumeLight"
+﻿Shader "KuShader/VolumetricFog"
 {
     Properties
     {
