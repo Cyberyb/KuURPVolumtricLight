@@ -141,6 +141,25 @@
             return worldPos;
         }
 
+        float3 DepthToWorldPosition2(float2 screenPos)
+        {
+            float deviceZ =SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,screenPos);
+            float2 ndcXY = screenPos * 2.0 - 1.0;
+        #if UNITY_REVERSED_Z
+            float ndcZ = deviceZ;
+        #else
+            float ndcZ = deviceZ * 2.0 - 1.0;
+        #endif
+            float4 clipPos = float4(ndcXY, ndcZ, 1.0);
+
+        #if UNITY_UV_STARTS_AT_TOP
+            clipPos.y = -clipPos.y; //翻转y轴，因为屏幕坐标和NDC坐标的y轴方向相反
+        #endif
+            float4 worldPos = mul(UNITY_MATRIX_I_VP, clipPos);
+            worldPos.xyz /= worldPos.w;
+            return worldPos.xyz;
+        }
+
         float extinctionAt(float3 pos)
         {
             //消光系数，在均匀介质中为常数
@@ -462,6 +481,7 @@
             float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
             float3 volumeFogColor = GetVolumetricFogColor(worldPos,sourceColor.rgb);
 
+            //return float4(worldPos,1.0);
             return float4(volumeFogColor,1.0);
         }
 

@@ -28,6 +28,9 @@ RWTexture3D<float4> _InputScatteringLight;
 RWTexture3D<float4> _InputAttribute;
 RWTexture3D<float4> _OutputScatteringLight;
 
+Texture2D<float> _CameraDepthTex;
+SamplerState sampler_CameraDepthTex;
+
 //网格相关参数
 float4 _VolumeSize;
 float4 _LogarithmicDepthDecodingParams;
@@ -217,12 +220,20 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     float3 worldPosition = FroxelToWorldPos(id, jitterBias);
     float4 scatterAndextinction = _InputAttribute[id];
+    float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
+    float eyeDepth = LinearEyeDepth(deviceDepth,_ZBufferParams);
 
+    if(eyeDepth < worldPosition.z)
+    {
+        _OutputScatteringLight[id] = float4(0,0,0,0);
+        return;
+    }
     float3 dirLightScattering = EvaluateLight_Directional(worldPosition, scatterAndextinction.w);
 
     //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
     float3 scatter = scatterAndextinction.xyz * dirLightScattering;
     _OutputScatteringLight[id] = float4(scatter, scatterAndextinction.a);
+    //_OutputScatteringLight[id] = float4(deviceDepth * 5,0,0, 1);
 }
 
 

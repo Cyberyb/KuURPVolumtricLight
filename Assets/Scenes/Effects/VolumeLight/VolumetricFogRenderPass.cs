@@ -202,7 +202,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         kucomputeShader.SetTexture(scatteringIndex, "_InputAttribute", volumeTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_OutputScatteringLight", scatteringTexture);
         Texture shadowTexutre = Shader.GetGlobalTexture("_MainLightShadowmapTexture");
-
+        kucomputeShader.SetTexture(scatteringIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
         kucomputeShader.Dispatch(scatteringIndex, 256 / 8, 256 / 8, 64 / 8);
 
         //CS3: 计算积分
@@ -288,7 +288,6 @@ public class VolumetricFogRenderPass : KuRenderPass
         cmd.SetComputeVectorParam(kucomputeShader, "_GlobalAlbedo", ((VolumeLight_Volume)volume)._GlobalAlbedo.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_GlobalExtinction", ((VolumeLight_Volume)volume)._GlobalExtinction.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_PhaseG", ((VolumeLight_Volume)volume)._PhaseG.value);
-
         
     }
     private void RTHandleRealse()
