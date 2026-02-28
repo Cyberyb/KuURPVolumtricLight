@@ -123,6 +123,16 @@ float3 GetGridCellPosByUniform(uint3 id, float3 gridBias)
     return positionWS.xyz;
 }
 
+float3 FroxelToWorldPos(uint3 froxelCoord, float3 gridBias)
+{
+    #ifdef UNIFORM_DEPTH 
+    float3 worldPosition = GetGridCellPosByUniform(froxelCoord, gridBias);
+#else
+    float3 worldPosition = GetGridCellPosByLog(froxelCoord, gridBias);
+#endif
+    return worldPosition;
+}
+
 //获取世界空间中的雾密度
 float GetFogDensity(float3 pos)
 {
@@ -139,7 +149,7 @@ float Phase(float3 inL, float3 outL)
     return a/b;
 }
 
-//计算阴影项
+//计算阴影项    
 float GetVolumeShadow(float3 position)
 {
     //float4 shadowPos = TransformWorldToShadowCoord(position); //把采样点的世界坐标转到阴影空间
@@ -149,7 +159,7 @@ float GetVolumeShadow(float3 position)
 }
 
 //计算直接光的散射
-float3 EvaluateLight_Directional(float3 worldPos)
+float3 EvaluateLight_Directional(float3 worldPos, float extinction)
 {
     float3 startPos = _WorldSpaceCameraPos.xyz;
     float3 rayDir = normalize(worldPos - startPos);
@@ -160,7 +170,7 @@ float3 EvaluateLight_Directional(float3 worldPos)
     //float volumeShadow = GetVolumeShadow(worldPos);
     float4 shadowPos = TransformWorldToShadowCoord(worldPos);
     Light mainLight = GetMainLight(shadowPos);
-
+    //float transToLight = exp(-ex)
 
     return mainLight.color.rgb * PI * phase  * mainLight.shadowAttenuation;
     //return float3(1,0,0);
@@ -178,11 +188,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     //float depth = LinearEyeDepth(_CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture,float2(uvz.xy),0).r, _ZBufferParams);
     //根据id定位grid的世界坐标
     float3 gridBias = float3(0.5f,0.5f,0.5f);
-#ifdef UNIFORM_DEPTH 
-    float3 worldPosition = GetGridCellPosByUniform(id.xyz, gridBias);
-#else
-    float3 worldPosition = GetGridCellPosByLog(id.xyz, gridBias);
-#endif
+    float3 worldPosition = FroxelToWorldPos(id, gridBias);
     
     //获取密度
     float fogDensity = GetFogDensity(worldPosition);
@@ -209,14 +215,11 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float jitterZ = GetRandomNum(float2(id.xy));
     float3 jitterBias = float3(gridBias.xy, jitterZ);
 
-#ifdef UNIFORM_DEPTH 
-    float3 worldPosition = GetGridCellPosByUniform(id.xyz, jitterBias);
-#else
-    float3 worldPosition = GetGridCellPosByLog(id.xyz, jitterBias);
-#endif
-    float3 dirLightScattering = EvaluateLight_Directional(worldPosition);
-
+    float3 worldPosition = FroxelToWorldPos(id, jitterBias);
     float4 scatterAndextinction = _InputAttribute[id];
+
+    float3 dirLightScattering = EvaluateLight_Directional(worldPosition, scatterAndextinction.w);
+
     //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
     float3 scatter = scatterAndextinction.xyz * dirLightScattering;
     _OutputScatteringLight[id] = float4(scatter, scatterAndextinction.a);
@@ -231,21 +234,13 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
     float density = 0;
     float3 preGirdBias = float3(0.5f,0.5f,-0.5f);
     float3 gridBias = float3(0.5f,0.5f,0.5f);
-#ifdef UNIFORM_DEPTH 
-    float3 preWorldPos = GetGridCellPosByUniform(pos, preGirdBias);
-#else
-    float3 preWorldPos = GetGridCellPosByLog(pos, preGirdBias);
-#endif
+    float3 preWorldPos = FroxelToWorldPos(pos, preGirdBias);
     float totalTransmittance = 1.0;
     float3 totalRadiance = 0;
     for(int z = 0; z < _VolumeSize.z; z++)
     {
         pos.z = z;
-        #ifdef UNIFORM_DEPTH 
-            float3 currWorldPos = GetGridCellPosByUniform(pos, gridBias);
-        #else
-            float3 currWorldPos = GetGridCellPosByLog(pos,gridBias);
-        #endif
+        float3 currWorldPos = FroxelToWorldPos(pos, gridBias);
         float step_size = distance(currWorldPos, preWorldPos);
         
         preWorldPos = currWorldPos;
@@ -256,7 +251,7 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
         float transmittance = exp(-extinction * step_size);
 
         float3 scatteringIntegrated = (S-S * transmittance) / max(extinction,0.0001);
-        totalRadiance += scatteringIntegrated * totalTransmittance;
+        totalRadiance += scatteringIntegrated * totalTransmittance * step_size;
         totalTransmittance *= transmittance;
         
         _OutputIntegrated[pos] = float4(totalRadiance,totalTransmittance);
