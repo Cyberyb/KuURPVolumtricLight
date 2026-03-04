@@ -77,7 +77,7 @@
         float4x4 _InvV;
         float4x4 _InvP;
         float4x4 _World2Volume;
-        float4x4 _PreVP;
+        float4x4 _PrevVP;
         float4 _LogarithmicDepthEncodingParams;
         float _FovY;
         float _Aspect;
@@ -221,7 +221,7 @@
 
         float3 ReprojectVolumeXYZ(float3 worldPos)
         {
-            float4 clipPos = mul(_PreVP, float4(worldPos.xyz,1.0));
+            float4 clipPos = mul(_PrevVP, float4(worldPos.xyz,1.0));
             clipPos.xyz = clipPos.xyz / clipPos.w;
             clipPos.xyz = clipPos.xyz * 0.5 + 0.5;
             float z = EncodeLogarithmicDepthGeneralized(clipPos.w, _LogarithmicDepthEncodingParams);
@@ -237,17 +237,17 @@
             #else
                 float z = EncodeLogarithmicDepthGeneralized(ClipPos.w, _LogarithmicDepthEncodingParams);
             #endif
-            float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, z));
+            float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z,1.0f)));
 
 
             float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
 
             //重投影，获取上一帧的散射与消光系数
-            float3 preuvz = ReprojectVolumeXYZ(worldPos);
-            float4 preInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, preuvz);
+            //float3 preuvz = ReprojectVolumeXYZ(worldPos);
+            //float4 preInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, preuvz);
 
-            float4 inScatteringAndTransmittance = _ReprojectWeight * preInScatteringAndTransmittance + (1.0f - _ReprojectWeight) * currInScatteringAndTransmittance;
-
+            //float4 inScatteringAndTransmittance = _ReprojectWeight * preInScatteringAndTransmittance + (1.0f - _ReprojectWeight) * currInScatteringAndTransmittance;
+            float4 inScatteringAndTransmittance = currInScatteringAndTransmittance;
             return backwardColor * inScatteringAndTransmittance.a + inScatteringAndTransmittance.rgb;
             //return uvz ;
         }

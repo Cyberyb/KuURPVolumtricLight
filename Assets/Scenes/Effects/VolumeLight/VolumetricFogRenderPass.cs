@@ -243,6 +243,9 @@ public class VolumetricFogRenderPass : KuRenderPass
         material.SetTexture("_GrabTexture", sourceHandle);
         material.SetTexture("_StencilTexture", stencilHandle);
 
+        // 设置体积纹理采样为双线性插值（3D纹理下为三线性）
+        if (integratedTexture != null)
+            integratedTexture.filterMode = FilterMode.Bilinear;
         material.SetTexture("_VolumeTexture", integratedTexture);
         material.SetTexture("_JitterTexture", jitterTexture);
 
@@ -250,7 +253,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         material.SetFloat("_Aspect", renderingData.cameraData.camera.aspect);
         material.SetFloat("_Farplane", ((VolumeLight_Volume)volume)._FarPlane.value);
         material.SetFloat("_Nearplane", renderingData.cameraData.camera.nearClipPlane);
-        material.SetMatrix("_PreVP", preVP);
+        material.SetMatrix("_PrevVP", preVP);
         material.SetFloat("_ReprojectWeight", ((VolumeLight_Volume)volume)._ReprojectWeight.value);
             
     }
@@ -262,7 +265,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         GetInverseVP(renderingData.cameraData.camera, nearClip, farClip, out var inverseV, out var inverseVP, ref VP);
         //material.SetMatrix("_InvV", renderingData.cameraData.camera.worldToCameraMatrix.inverse);
         //material.SetMatrix("_InvP", renderingData.cameraData.camera.projectionMatrix.inverse);
-        float c = 0.5f;
+        float c = ((VolumeLight_Volume)volume)._DepthFactor.value;
         Vector4 logarithmicDepthDecodingParams = ComputeLogarithmicDepthDecodingParams(nearClip, farClip, c);
         Vector4 logarithmicDepthEncodingParams = ComputeLogarithmicDepthEncodingParams(nearClip, farClip, c);
         cmd.SetGlobalMatrix("_World2Volume", VP);

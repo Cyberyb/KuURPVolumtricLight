@@ -24,6 +24,7 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     public ClampedFloatParameter _RangeSigma = new ClampedFloatParameter(0.5f,0.0f,3f);
 
     [Header("体素雾空间设置")]
+    public ClampedFloatParameter _DepthFactor = new ClampedFloatParameter(1.0f, 0.01f, 5.0f);
     public ClampedFloatParameter _FarPlane = new ClampedFloatParameter(128.0f, 1.0f, 1280.0f);
     public Vector4Parameter _VolumeColor = new Vector4Parameter(new Vector4(0.2f, 0.6f, 1.0f, 1.0f));
     public RenderTextureParameter _VolumeTexture = new RenderTextureParameter(null);

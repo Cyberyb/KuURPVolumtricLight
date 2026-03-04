@@ -12,6 +12,8 @@
 //#define MAIN_LIGHT_CALCULATE_SHADOWS  //定义阴影采样
 #define _MAIN_LIGHT_SHADOWS_CASCADE //启用级联阴影
 
+#define USE_TEMPORAL_REPROJECTION
+
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
@@ -20,6 +22,7 @@
 #include "Packages/com.unity.render-pipelines.universal/Shaders/PostProcessing/Common.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+#include "../Shader/FogCommon.hlsl"
 
 
 RWTexture3D<float4> _OutputAttribute;
@@ -34,12 +37,14 @@ SamplerState sampler_CameraDepthTex;
 //网格相关参数
 float4 _VolumeSize;
 float4 _LogarithmicDepthDecodingParams;
-float4 _LogarithmicEnpthDecodingParams;
+float4 _LogarithmicDepthEncodingParams;
 //基于Froxel的far和near重新计算
 float4 _ZParam;
 float4x4 _InverseV;
 float4x4 _InverseP;
 float4x4 _InverseVP;
+float4x4 _PrevVP;
+float4x4 _World2Volume;
 float4 _VolumeColor;
 float _Farplane;
 float _Nearplane;
@@ -69,6 +74,26 @@ inline float EyeDepthToProj(float z, float4 ZBufferParams)
 float GetRandomNum(float2 st)
 {
     return frac(sin(dot(st.xy,float2(12.9898 + 5 * (_SinTime.w),78.233)))*43758.5453123);   
+}
+
+float ComputeNormalizedZSliceFromDepth(float SceneDepth, float4 encodingParams)
+{
+    // 计算Z切片索引
+    return encodingParams.x + encodingParams.y * log2(max(0, SceneDepth - encodingParams.z));
+}
+
+float3 ComputeHistoryVolumeUV(float3 worldPos, float4x4 prevWorldToClip)
+{
+    // 将世界坐标转换为裁剪空间坐标
+    float4 clipPos = mul(prevWorldToClip, float4(worldPos, 1.0));
+    
+    // 执行透视除法，得到NDC坐标
+    float3 ndcPos = clipPos.xyz / clipPos.w;
+    
+    // 将NDC坐标转换为纹理坐标（范围从0到1）
+    float3 uv = (ndcPos.xy * 0.5 + 0.5, ComputeNormalizedZSliceFromDepth(clipPos.w, _LogarithmicDepthEncodingParams));
+    
+    return uv;
 }
 
 //DispatchThreadId转世界坐标，对数深度
@@ -213,22 +238,31 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 [numthreads(8,8,8)]
 void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 {
-    //Jitter采样
     float3 gridBias = float3(0.5f,0.5f,0.5f);
-    float jitterZ = GetRandomNum(float2(id.xy));
-    float3 jitterBias = float3(gridBias.xy, jitterZ);
+    float3 worldPosition = FroxelToWorldPos(id, gridBias);
 
-    float3 worldPosition = FroxelToWorldPos(id, jitterBias);
-    float4 scatterAndextinction = _InputAttribute[id];
+    //深度测试，被遮挡的体素不计算散射
     float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
-    float eyeDepth = LinearEyeDepth(deviceDepth,_ZBufferParams);
-
-    if(eyeDepth < worldPosition.z)
+    //计算出NDC空间的z值（第二种方法可以先算出UV再转为NDC，就不用矩阵了）
+    float4 clipPos = mul(_World2Volume, float4(worldPosition, 1.0));
+    clipPos /= clipPos.w;
+    if(1 - deviceDepth < clipPos.z)
     {
         _OutputScatteringLight[id] = float4(0,0,0,0);
         return;
     }
-    float3 dirLightScattering = EvaluateLight_Directional(worldPosition, scatterAndextinction.w);
+    #ifdef USE_TEMPORAL_REPROJECTION
+        float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP);
+    #endif
+
+    //Jitter采样
+    float jitterZ = GetRandomNum(float2(id.xy));
+    float3 jitterBias = float3(gridBias.xy, jitterZ);
+
+    float3 jitterWorldPosition = FroxelToWorldPos(id, jitterBias);
+    float4 scatterAndextinction = _InputAttribute[id];
+
+    float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
 
     //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
     float3 scatter = scatterAndextinction.xyz * dirLightScattering;
