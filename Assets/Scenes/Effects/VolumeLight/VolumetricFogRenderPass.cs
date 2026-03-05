@@ -1,11 +1,13 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering.RenderGraphModule;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
-using static Unity.Burst.Intrinsics.X86.Avx;
+
 
 public class VolumetricFogRenderPass : KuRenderPass
 {
@@ -40,6 +42,9 @@ public class VolumetricFogRenderPass : KuRenderPass
     public RenderTexture scatteringTexture;
     //积分RenderTexture
     public RenderTexture integratedTexture;
+    //History Scattering RenderTexture
+    public RenderTexture prevScatteringTexture;
+    public RenderTexture lowPrevScatteringTexture;
 
     private RenderTexture shadowmapTexture;
 
@@ -112,6 +117,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         volumeTexture = ((VolumeLight_Volume)volume)._VolumeTexture.value;
         scatteringTexture = ((VolumeLight_Volume)volume)._ScatteringTexture.value;
         integratedTexture = ((VolumeLight_Volume)volume)._IntegratedTexture.value;
+        prevScatteringTexture = ((VolumeLight_Volume)volume)._PrevScatteringTexture.value;
 
         jitterTexture = ((VolumeLight_Volume)volume)._JitterTexture.value;
     }
@@ -134,6 +140,8 @@ public class VolumetricFogRenderPass : KuRenderPass
             {
                 RenderRaymarchingFog(cmd, ref renderingData);
             }
+            // Debug.Log("preVP Matrix:\n" + preVP.ToString("F4"));
+            // Debug.Log("VP Matrix:\n" + VP.ToString("F4"));
             preVP = VP;
         }
         
@@ -201,9 +209,12 @@ public class VolumetricFogRenderPass : KuRenderPass
         int scatteringIndex = kucomputeShader.FindKernel("CSScatteringLight");
         kucomputeShader.SetTexture(scatteringIndex, "_InputAttribute", volumeTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_OutputScatteringLight", scatteringTexture);
+        kucomputeShader.SetTexture(scatteringIndex, "_PrevScatteringLight", prevScatteringTexture);
         Texture shadowTexutre = Shader.GetGlobalTexture("_MainLightShadowmapTexture");
         kucomputeShader.SetTexture(scatteringIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
         kucomputeShader.Dispatch(scatteringIndex, 256 / 8, 256 / 8, 64 / 8);
+
+        cmd.CopyTexture(scatteringTexture, prevScatteringTexture);
 
         //CS3: 计算积分
         int integrationIndex = kucomputeShader.FindKernel("CSIntegration");
@@ -253,12 +264,10 @@ public class VolumetricFogRenderPass : KuRenderPass
         material.SetFloat("_Aspect", renderingData.cameraData.camera.aspect);
         material.SetFloat("_Farplane", ((VolumeLight_Volume)volume)._FarPlane.value);
         material.SetFloat("_Nearplane", renderingData.cameraData.camera.nearClipPlane);
-        material.SetMatrix("_PrevVP", preVP);
-        material.SetFloat("_ReprojectWeight", ((VolumeLight_Volume)volume)._ReprojectWeight.value);
-            
     }
     private void UpdateComputeValues(ref CommandBuffer cmd, ref RenderingData renderingData)
     {
+        //深度相关参数计算
         float farClip = ((VolumeLight_Volume)volume)._FarPlane.value;
         float nearClip = renderingData.cameraData.camera.nearClipPlane;
         Vector4 zParam = GetZParam(nearClip, farClip);
@@ -268,7 +277,16 @@ public class VolumetricFogRenderPass : KuRenderPass
         float c = ((VolumeLight_Volume)volume)._DepthFactor.value;
         Vector4 logarithmicDepthDecodingParams = ComputeLogarithmicDepthDecodingParams(nearClip, farClip, c);
         Vector4 logarithmicDepthEncodingParams = ComputeLogarithmicDepthEncodingParams(nearClip, farClip, c);
+
+        //Jitter参数计算
+        int frameNumber = Time.renderedFrameCount;
+        Vector3 frameJitterValue = VolumetricFogTemporalRandom(frameNumber);
+        cmd.SetGlobalFloat("_JitterWeight", ((VolumeLight_Volume)volume)._JitterWeight.value);
+        cmd.SetGlobalFloat("_FrameNumberMod8", frameNumber % 8);
+        cmd.SetGlobalVector("_FrameJitterValue", frameJitterValue);
+        cmd.SetGlobalFloat("_ReprojectWeight", ((VolumeLight_Volume)volume)._ReprojectWeight.value);
         cmd.SetGlobalMatrix("_World2Volume", VP);
+        cmd.SetGlobalMatrix("_PrevVP", preVP);
         cmd.SetGlobalMatrix("_InverseV", inverseV);
         cmd.SetGlobalMatrix("_InverseVP", inverseVP);
         cmd.SetGlobalFloat("_Farplane", farClip);
@@ -380,4 +398,13 @@ public class VolumetricFogRenderPass : KuRenderPass
         VP = proj * worldToCmaera;
     }
 
+    static Vector3 VolumetricFogTemporalRandom(int FrameNumber)
+    {
+        // Center of the voxel
+        Vector3 RandomOffsetValue = new Vector3(.5f, .5f, .5f);
+
+        RandomOffsetValue = new Vector3(VolumeHelper.Halton(FrameNumber & 1023, 2), VolumeHelper.Halton(FrameNumber & 1023, 3), VolumeHelper.Halton(FrameNumber & 1023, 5));
+        
+        return RandomOffsetValue;
+    }
 }

@@ -34,6 +34,9 @@ RWTexture3D<float4> _OutputScatteringLight;
 Texture2D<float> _CameraDepthTex;
 SamplerState sampler_CameraDepthTex;
 
+Texture3D<float4> _PrevScatteringLight;
+SamplerState sampler_linear_clamp;
+
 //网格相关参数
 float4 _VolumeSize;
 float4 _LogarithmicDepthDecodingParams;
@@ -50,6 +53,10 @@ float _Farplane;
 float _Nearplane;
 float _FovY;
 float _Aspect;
+float3 _FrameJitterValue;
+int _FrameNumberMod8;
+float _JitterWeight;
+float _ReprojectWeight;
 
 //雾相关参数
 float _HeightFallOff;
@@ -82,7 +89,7 @@ float ComputeNormalizedZSliceFromDepth(float SceneDepth, float4 encodingParams)
     return encodingParams.x + encodingParams.y * log2(max(0, SceneDepth - encodingParams.z));
 }
 
-float3 ComputeHistoryVolumeUV(float3 worldPos, float4x4 prevWorldToClip)
+float3 ComputeHistoryVolumeUV(float3 worldPos, float4x4 prevWorldToClip, float4 encodingParams)
 {
     // 将世界坐标转换为裁剪空间坐标
     float4 clipPos = mul(prevWorldToClip, float4(worldPos, 1.0));
@@ -91,7 +98,7 @@ float3 ComputeHistoryVolumeUV(float3 worldPos, float4x4 prevWorldToClip)
     float3 ndcPos = clipPos.xyz / clipPos.w;
     
     // 将NDC坐标转换为纹理坐标（范围从0到1）
-    float3 uv = (ndcPos.xy * 0.5 + 0.5, ComputeNormalizedZSliceFromDepth(clipPos.w, _LogarithmicDepthEncodingParams));
+    float3 uv = float3(ndcPos.xy * 0.5 + 0.5, ComputeNormalizedZSliceFromDepth(clipPos.w, encodingParams));
     
     return uv;
 }
@@ -241,6 +248,13 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float3 gridBias = float3(0.5f,0.5f,0.5f);
     float3 worldPosition = FroxelToWorldPos(id, gridBias);
 
+    //Jitter采样
+    //float jitterZ = GetRandomNum(float2(id.xy));
+    //float3 jitterBias = float3(gridBias.xy, jitterZ);
+    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz * 2.0f - 1.0f;
+    float3 jitterBias = _FrameJitterValue + _JitterWeight * rand3D;
+    float3 jitterWorldPosition = FroxelToWorldPos(id, jitterBias);
+
     //深度测试，被遮挡的体素不计算散射
     float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
     //计算出NDC空间的z值（第二种方法可以先算出UV再转为NDC，就不用矩阵了）
@@ -251,23 +265,31 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
         _OutputScatteringLight[id] = float4(0,0,0,0);
         return;
     }
-    #ifdef USE_TEMPORAL_REPROJECTION
-        float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP);
-    #endif
+#ifdef USE_TEMPORAL_REPROJECTION
+    float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
+    // 采样上一帧的散射纹理，获取历史散射值
+    float4 historyScattering = float4(0, 0, 0, 0);
+    bool isValidHistory = all(historyUV >= 0) && all(historyUV <= 1);
+    if (isValidHistory)
+    {
+        historyScattering = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_linear_clamp, historyUV, 0);
+        //historyScattering = _PrevScatteringLight.SampleLevel(sampler_linear_clamp, historyUV, 0);
+    }
+#else 
+    float4 historyScattering = float4(0, 0, 0, 0);
+#endif
 
-    //Jitter采样
-    float jitterZ = GetRandomNum(float2(id.xy));
-    float3 jitterBias = float3(gridBias.xy, jitterZ);
-
-    float3 jitterWorldPosition = FroxelToWorldPos(id, jitterBias);
     float4 scatterAndextinction = _InputAttribute[id];
 
     float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
 
     //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
     float3 scatter = scatterAndextinction.xyz * dirLightScattering;
-    _OutputScatteringLight[id] = float4(scatter, scatterAndextinction.a);
-    //_OutputScatteringLight[id] = float4(deviceDepth * 5,0,0, 1);
+    float4 finalScatterAndExtinction = float4(scatter, scatterAndextinction.a);
+
+    finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScattering, isValidHistory? _ReprojectWeight : 0.0f);
+
+    _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
 
 
