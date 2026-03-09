@@ -27,18 +27,21 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     public ClampedFloatParameter _DepthFactor = new ClampedFloatParameter(1.0f, 0.01f, 5.0f);
     public ClampedFloatParameter _FarPlane = new ClampedFloatParameter(128.0f, 1.0f, 1280.0f);
     public Vector4Parameter _VolumeColor = new Vector4Parameter(new Vector4(0.2f, 0.6f, 1.0f, 1.0f));
+
+    [Header("体素雾渲染纹理设置")]
     public RenderTextureParameter _VolumeTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _IntegratedTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _ScatteringTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _PrevScatteringTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _LowPrevScatteringTexture = new RenderTextureParameter(null);
-
+    public RenderTextureParameter _ScreenIntegratedTexture = new RenderTextureParameter(null);
 
     [Header("体素雾属性设置")]
+    public BoolParameter _UseFroxel = new BoolParameter(true);
+    public BoolParameter _UseScreenIntergrated = new BoolParameter(false);
     public ClampedFloatParameter _GlobalFogDensity = new ClampedFloatParameter(1.0f, 0.001f, 2.0f);
     public ClampedFloatParameter _HeightFallOff = new ClampedFloatParameter(0.5f, -5.0f, 5.0f);
     public ClampedFloatParameter _FogBaseHeight = new ClampedFloatParameter(0.0f, -100.0f, 100.0f);
-    public BoolParameter _UseFroxel = new BoolParameter(true);
     public ClampedFloatParameter _JitterWeight = new ClampedFloatParameter(1.0f, 0.0f, 10.0f);
     public BoolParameter _UseTemporalReproject = new BoolParameter(true);
     public Vector3Parameter _GlobalScatter = new Vector3Parameter(new Vector3(0.2f,0.3f,1.0f));

@@ -12,6 +12,9 @@
 //#define MAIN_LIGHT_CALCULATE_SHADOWS  //定义阴影采样
 #define _MAIN_LIGHT_SHADOWS_CASCADE //启用级联阴影
 
+#define _ADDITIONAL_LIGHT_SHADOWS
+#define _ADDITIONAL_LIGHT_SHADOWS_CASCADE
+
 #define USE_TEMPORAL_REPROJECTION
 
 
@@ -30,6 +33,7 @@ RWTexture3D<float4> _OutputIntegrated;
 RWTexture3D<float4> _InputScatteringLight;
 RWTexture3D<float4> _InputAttribute;
 RWTexture3D<float4> _OutputScatteringLight;
+RWTexture2D<float4> _ScreenIntegrated;
 
 Texture2D<float> _CameraDepthTex;
 SamplerState sampler_CameraDepthTex;
@@ -48,6 +52,7 @@ float4x4 _InverseP;
 float4x4 _InverseVP;
 float4x4 _PrevVP;
 float4x4 _World2Volume;
+float4x4 _VP;
 float4 _VolumeColor;
 float _Farplane;
 float _Nearplane;
@@ -57,6 +62,7 @@ float3 _FrameJitterValue;
 int _FrameNumberMod8;
 float _JitterWeight;
 float _ReprojectWeight;
+int _LocalVolumeNum;
 
 //雾相关参数
 float _HeightFallOff;
@@ -168,6 +174,45 @@ float3 FroxelToWorldPos(uint3 froxelCoord, float3 gridBias)
     return worldPosition;
 }
 
+//Depth To World Position
+float3 DepthToWorldPosition(float2 screenPos)
+{
+    float deviceZ = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (screenPos  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
+    float2 ndcXY = screenPos * 2.0 - 1.0;
+#if UNITY_REVERSED_Z
+    float ndcZ = deviceZ;
+#else
+    float ndcZ = deviceZ * 2.0 - 1.0;
+#endif
+    float4 clipPos = float4(ndcXY, ndcZ, 1.0);
+
+#if UNITY_UV_STARTS_AT_TOP
+    clipPos.y = -clipPos.y; //翻转y轴，因为屏幕坐标和NDC坐标的y轴方向相反
+#endif
+    float4 worldPos = mul(UNITY_MATRIX_I_VP, clipPos);
+    worldPos.xyz /= worldPos.w;
+    return worldPos.xyz;
+}
+
+float3 WorldToNDC(float3 worldPos)
+{
+    float4 ClipPos = mul(UNITY_MATRIX_VP, float4(worldPos,1.0));
+    #ifdef UNIFORM_DEPTH
+        float z = ((ClipPos.w - _Nearplane) * 2.0 / (_Farplane - _Nearplane)) - 1.0;
+        z = z * 0.5 + 0.5;  
+    #else
+        float z = EncodeLogarithmicDepthGeneralized(ClipPos.w, _LogarithmicDepthEncodingParams);
+    #endif
+    float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z,1.0f)));
+}
+
+int DepthToIDZ(float2 screenPos)
+{
+    float3 worldPos = DepthToWorldPosition(screenPos);
+    float3 uvz = WorldToNDC(worldPos);
+    return int(uvz.z);
+}
+
 //获取世界空间中的雾密度
 float GetFogDensity(float3 pos)
 {
@@ -211,6 +256,43 @@ float3 EvaluateLight_Directional(float3 worldPos, float extinction)
     //return float3(1,0,0);
 }
 
+float3 EvaluateLight_Addition(float3 worldPos)
+{
+    float3 startPos = _WorldSpaceCameraPos.xyz;
+    float3 rayDir = normalize(worldPos - startPos);
+    int numAddtinalLights = 3;
+    float3 lightColor = 0;
+    half testValue = 0;
+    for (int lightIndex = 0; lightIndex < numAddtinalLights; ++lightIndex)
+    {
+        //光源信息
+        float4 lightPositionWS = _AdditionalLightsPosition[lightIndex];
+        half3 color = _AdditionalLightsColor[lightIndex].rgb;
+        half4 distanceAndSpotAttenuation = _AdditionalLightsAttenuation[lightIndex];
+        half4 spotDirection = _AdditionalLightsSpotDir[lightIndex];
+        float3 lightVector = lightPositionWS.xyz - worldPos * lightPositionWS.w;
+        float distanceSqr = max(dot(lightVector, lightVector), HALF_MIN);
+        half3 lightDirection = half3(lightVector * rsqrt(distanceSqr));
+        half  attenuation = DistanceAttenuation(distanceSqr, distanceAndSpotAttenuation.xy) * AngleAttenuation(spotDirection.xyz, lightDirection, distanceAndSpotAttenuation.zw);
+        testValue += attenuation;
+// #ifdef _ADDITIONAL_LIGHT_SHADOWS
+//         ShadowSamplingData shadowSamplingData = GetAdditionalLightShadowSamplingData();
+//         float4 shadowCoord = mul(_AdditionalLightsWorldToShadow[lightIndex], float4(positionWS, 1.0));
+//         half4 shadowParams = GetAdditionalLightShadowParams(lightIndex);
+//         half shadowAttenuation = SampleShadowmap(TEXTURE2D_ARGS(_AdditionalLightsShadowmapTexture, sampler_AdditionalLightsShadowmapTexture), shadowCoord, shadowSamplingData, shadowParams, true);
+//         shadowAttenuation = saturate(shadowAttenuation);
+// #else
+//         half shadowAttenuation = 1.0;
+// #endif
+        half shadowAttenuation = AdditionalLightRealtimeShadow(lightIndex, lightPositionWS.xyz, lightDirection);
+        float  phase = Phase(-lightDirection ,rayDir);
+        float3 radiance = PI * color.rgb * attenuation * phase * shadowAttenuation;
+        lightColor += radiance;
+    }
+    //lightColor = float3(testValue.xxx);
+    return lightColor;
+}
+
 //存放属性
 [numthreads(8,8,8)]
 void CSMain (uint3 id : SV_DispatchThreadID)
@@ -230,6 +312,20 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float extinction = _GlobalExtinction * fogDensity;
     float3 scattering = _GlobalAlbedo * extinction;
     //float absorb = max(extinction - VolumeLuminance(scattering),0);
+
+    //获取场景局部体积雾
+    // for(int i = 0; i < _LocalVolumeNum; i++)
+    // {
+    //     float4 localVolume = _LocalVolumes[i];
+    //     float3 localScatter = _LocalScatters[i].rgb;
+    //     float localExtinction = _LocalScatters[i].a;
+    //     //判断是否在局部体积内
+    //     if(all(localVolume.xyz - worldPosition < localVolume.w) && all(worldPosition - localVolume.xyz > -localVolume.w))
+    //     {
+    //         scattering += localScatter * localExtinction;
+    //         extinction += localExtinction;
+    //     }
+    // }
 
     //计算体积属性
     
@@ -258,7 +354,7 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     //深度测试，被遮挡的体素不计算散射
     float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
     //计算出NDC空间的z值（第二种方法可以先算出UV再转为NDC，就不用矩阵了）
-    float4 clipPos = mul(_World2Volume, float4(worldPosition, 1.0));
+    float4 clipPos = mul(_VP, float4(worldPosition, 1.0));
     clipPos /= clipPos.w;
     if(1 - deviceDepth < clipPos.z)
     {
@@ -280,11 +376,9 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 #endif
 
     float4 scatterAndextinction = _InputAttribute[id];
-
     float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
-
-    //float extinction = VolumeLuminance(scatterAndabsorb.xyz) + scatterAndabsorb.w;
-    float3 scatter = scatterAndextinction.xyz * dirLightScattering;
+    float3 addLightScattering = EvaluateLight_Addition(jitterWorldPosition);
+    float3 scatter = scatterAndextinction.xyz * (dirLightScattering + addLightScattering);
     float4 finalScatterAndExtinction = float4(scatter, scatterAndextinction.a);
 
     finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScattering, isValidHistory? _ReprojectWeight : 0.0f);
@@ -304,6 +398,10 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
     float3 preWorldPos = FroxelToWorldPos(pos, preGirdBias);
     float totalTransmittance = 1.0;
     float3 totalRadiance = 0;
+
+    //float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
+    
+    
     for(int z = 0; z < _VolumeSize.z; z++)
     {
         pos.z = z;
@@ -323,5 +421,6 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
         
         _OutputIntegrated[pos] = float4(totalRadiance,totalTransmittance);
     }
+    _ScreenIntegrated[id.xy] = float4(totalRadiance,totalTransmittance);
     
 }

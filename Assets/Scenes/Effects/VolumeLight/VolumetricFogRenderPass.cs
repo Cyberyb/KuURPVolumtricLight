@@ -46,12 +46,16 @@ public class VolumetricFogRenderPass : KuRenderPass
     public RenderTexture prevScatteringTexture;
     public RenderTexture lowPrevScatteringTexture;
 
+    public RenderTexture screenIntegratedTexture;
+
     private RenderTexture shadowmapTexture;
 
-    private Matrix4x4 preVP;
+    private Matrix4x4 preWorldToVolume;
+    private Matrix4x4 worldToVolume;
+
     private Matrix4x4 VP;
     
-   
+   private LocalKeyword screenIntergratedKeyword;
 
 
     VolumeStack stack = VolumeManager.instance.stack;
@@ -118,8 +122,11 @@ public class VolumetricFogRenderPass : KuRenderPass
         scatteringTexture = ((VolumeLight_Volume)volume)._ScatteringTexture.value;
         integratedTexture = ((VolumeLight_Volume)volume)._IntegratedTexture.value;
         prevScatteringTexture = ((VolumeLight_Volume)volume)._PrevScatteringTexture.value;
-
+        screenIntegratedTexture = ((VolumeLight_Volume)volume)._ScreenIntegratedTexture.value;
         jitterTexture = ((VolumeLight_Volume)volume)._JitterTexture.value;
+
+        //设置宏
+        screenIntergratedKeyword = new LocalKeyword(material.shader, "USE_SCREEN_INTERGRATED_FOG");
     }
 
     protected override void Render(CommandBuffer cmd, ref RenderingData renderingData)
@@ -142,7 +149,7 @@ public class VolumetricFogRenderPass : KuRenderPass
             }
             // Debug.Log("preVP Matrix:\n" + preVP.ToString("F4"));
             // Debug.Log("VP Matrix:\n" + VP.ToString("F4"));
-            preVP = VP;
+            preWorldToVolume = worldToVolume;
         }
         
 
@@ -210,7 +217,10 @@ public class VolumetricFogRenderPass : KuRenderPass
         kucomputeShader.SetTexture(scatteringIndex, "_InputAttribute", volumeTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_OutputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_PrevScatteringLight", prevScatteringTexture);
-        Texture shadowTexutre = Shader.GetGlobalTexture("_MainLightShadowmapTexture");
+        //RenderTexture mainLightShadowmap = Shader.GetGlobalTexture("_MainLightShadowmapTexture") as RenderTexture;
+        //Texture additionalShadowmap = Shader.GetGlobalTexture("_AdditionalLightsShadowmapTexture");
+        //kucomputeShader.SetTexture(kernelIndex, "_MainLightShadowmapTexture", mainLightShadowmap);
+        //kucomputeShader.SetTexture(kernelIndex, "_AdditionalLightsShadowmapTexture", renderingData.shadowData.additionalLightsShadowmapTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
         kucomputeShader.Dispatch(scatteringIndex, 256 / 8, 256 / 8, 64 / 8);
 
@@ -219,7 +229,10 @@ public class VolumetricFogRenderPass : KuRenderPass
         //CS3: 计算积分
         int integrationIndex = kucomputeShader.FindKernel("CSIntegration");
 
-
+        if(screenIntegratedTexture != null)
+        {
+            kucomputeShader.SetTexture(integrationIndex, "_ScreenIntegrated", screenIntegratedTexture);
+        }
         kucomputeShader.SetTexture(integrationIndex, "_InputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(integrationIndex, "_OutputIntegrated", integratedTexture);
 
@@ -256,14 +269,26 @@ public class VolumetricFogRenderPass : KuRenderPass
 
         // 设置体积纹理采样为双线性插值（3D纹理下为三线性）
         if (integratedTexture != null)
-            integratedTexture.filterMode = FilterMode.Bilinear;
-        material.SetTexture("_VolumeTexture", integratedTexture);
+        {
+            //integratedTexture.filterMode = FilterMode.Bilinear;
+            material.SetTexture("_VolumeTexture", integratedTexture);
+        }
+
         material.SetTexture("_JitterTexture", jitterTexture);
+        if(screenIntegratedTexture != null)
+        {
+            integratedTexture.filterMode = FilterMode.Bilinear;
+            material.SetTexture("_ScreenIntegrated", screenIntegratedTexture);
+        }
+            
 
         material.SetFloat("_FovY", renderingData.cameraData.camera.fieldOfView);
         material.SetFloat("_Aspect", renderingData.cameraData.camera.aspect);
         material.SetFloat("_Farplane", ((VolumeLight_Volume)volume)._FarPlane.value);
         material.SetFloat("_Nearplane", renderingData.cameraData.camera.nearClipPlane);
+    
+        //宏定义
+        material.SetKeyword(screenIntergratedKeyword, ((VolumeLight_Volume)volume)._UseScreenIntergrated.value);
     }
     private void UpdateComputeValues(ref CommandBuffer cmd, ref RenderingData renderingData)
     {
@@ -271,7 +296,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         float farClip = ((VolumeLight_Volume)volume)._FarPlane.value;
         float nearClip = renderingData.cameraData.camera.nearClipPlane;
         Vector4 zParam = GetZParam(nearClip, farClip);
-        GetInverseVP(renderingData.cameraData.camera, nearClip, farClip, out var inverseV, out var inverseVP, ref VP);
+        GetInverseVP(renderingData.cameraData.camera, nearClip, farClip, out var inverseV, out var volumeToWorld, ref worldToVolume);
         //material.SetMatrix("_InvV", renderingData.cameraData.camera.worldToCameraMatrix.inverse);
         //material.SetMatrix("_InvP", renderingData.cameraData.camera.projectionMatrix.inverse);
         float c = ((VolumeLight_Volume)volume)._DepthFactor.value;
@@ -285,11 +310,12 @@ public class VolumetricFogRenderPass : KuRenderPass
         cmd.SetGlobalFloat("_FrameNumberMod8", frameNumber % 8);
         cmd.SetGlobalVector("_FrameJitterValue", frameJitterValue);
         cmd.SetGlobalFloat("_ReprojectWeight", ((VolumeLight_Volume)volume)._ReprojectWeight.value);
-        cmd.SetGlobalMatrix("_World2Volume", VP);
-        cmd.SetGlobalMatrix("_PrevVP", preVP);
+        cmd.SetGlobalMatrix("_World2Volume", worldToVolume);
+        cmd.SetGlobalMatrix("_PrevVP", preWorldToVolume);
         cmd.SetGlobalMatrix("_InverseV", inverseV);
-        cmd.SetGlobalMatrix("_InverseVP", inverseVP);
+        cmd.SetGlobalMatrix("_InverseVP", volumeToWorld);
         cmd.SetGlobalFloat("_Farplane", farClip);
+        cmd.SetGlobalMatrix("_VP", renderingData.cameraData.camera.projectionMatrix * renderingData.cameraData.camera.worldToCameraMatrix);
         //cmd.SetComputeFloatParam(kucomputeShader, "_Farplane", farClip);
         cmd.SetComputeFloatParam(kucomputeShader, "_Nearplane", nearClip);
         cmd.SetComputeVectorParam(kucomputeShader, "_VolumeSize", new Vector4(256, 256, 64, 1));
@@ -389,13 +415,15 @@ public class VolumetricFogRenderPass : KuRenderPass
         return zParam;
     }
 
-    static void GetInverseVP(Camera camera, float nearClip, float fogFarClip, out Matrix4x4 inverseV, out Matrix4x4 inverseVP, ref Matrix4x4 VP)
+    static void GetInverseVP(Camera camera, float nearClip, float fogFarClip, 
+    out Matrix4x4 inverseV, out Matrix4x4 volumeToWorld, ref Matrix4x4 worldToVolume)
     {
-        Matrix4x4 proj = Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, nearClip, fogFarClip);
-        Matrix4x4 worldToCmaera = camera.worldToCameraMatrix;
-        inverseV = worldToCmaera.inverse;
-        inverseVP = inverseV * proj.inverse;
-        VP = proj * worldToCmaera;
+        Matrix4x4 projInVolume = Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, nearClip, fogFarClip);
+        Matrix4x4 worldToCamera = camera.worldToCameraMatrix;
+        inverseV = worldToCamera.inverse;
+        volumeToWorld = inverseV * projInVolume.inverse;
+        worldToVolume = projInVolume * worldToCamera;
+        //Matrix4x4 proj = Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, camera.nearClip, fogFarClip);
     }
 
     static Vector3 VolumetricFogTemporalRandom(int FrameNumber)

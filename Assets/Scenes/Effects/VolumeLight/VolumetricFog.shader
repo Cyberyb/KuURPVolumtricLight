@@ -24,7 +24,7 @@
         
  
         
-        
+        #pragma shader_feature_local USE_SCREEN_INTERGRATED_FOG
         //TEXTURE2D(_CameraDepthTexture);
         //SAMPLER(sampler_CameraDepthTexture);
 
@@ -65,6 +65,9 @@
 
         TEXTURE3D(_VolumeTexture);
         SAMPLER(sampler_VolumeTexture);
+
+        TEXTURE2D(_ScreenIntegrated);
+        SAMPLER(sampler_ScreenIntegrated);
 
 
         float4 _ColorTint;
@@ -239,9 +242,11 @@
             #endif
             float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z,1.0f)));
 
-
-            float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
-
+            #ifdef USE_SCREEN_INTERGRATED_FOG
+                float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE2D(_ScreenIntegrated, sampler_ScreenIntegrated, uvz.xy);
+            #else
+                float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
+            #endif
             //重投影，获取上一帧的散射与消光系数
             //float3 preuvz = ReprojectVolumeXYZ(worldPos);
             //float4 preInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, preuvz);
