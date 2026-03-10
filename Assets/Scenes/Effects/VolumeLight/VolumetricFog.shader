@@ -87,6 +87,7 @@
         float _Farplane;
         float _Nearplane;
         float _ReprojectWeight;
+        float4 _VolumeSize;
 
         TEXTURE2D(_JitterTexture);
         SAMPLER(sampler__JitterTexture);
@@ -242,10 +243,21 @@
             #endif
             float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z,1.0f)));
 
+            int zSlice0 = floor(uvz.z * _VolumeSize.z);
+            int zSlice1 = min(zSlice0 + 1, (int)_VolumeSize.z - 1);
+            float w1 = frac(uvz.z * _VolumeSize.z);
+            float zSlice0Depth = DecodeLogarithmicDepthGeneralized(zSlice0 / _VolumeSize.z, _LogarithmicDepthEncodingParams);
+            float zSlice1Depth = DecodeLogarithmicDepthGeneralized(zSlice1 / _VolumeSize.z, _LogarithmicDepthEncodingParams);
+            float w2 = min((ClipPos.w - zSlice0Depth) / (zSlice1Depth - zSlice0Depth + 0.0001), 1);
+            float3 uvz0 = float3(uvz.xy, zSlice0 / _VolumeSize.z);
+            float3 uvz1 = float3(uvz.xy, zSlice1 / _VolumeSize.z);
+
             #ifdef USE_SCREEN_INTERGRATED_FOG
                 float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE2D(_ScreenIntegrated, sampler_ScreenIntegrated, uvz.xy);
             #else
-                float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
+                float4 currInScatteringAndTransmittance0 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz0);
+                float4 currInScatteringAndTransmittance1 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz1);
+                float4 currInScatteringAndTransmittance = lerp(currInScatteringAndTransmittance0, currInScatteringAndTransmittance1, w2);
             #endif
             //重投影，获取上一帧的散射与消光系数
             //float3 preuvz = ReprojectVolumeXYZ(worldPos);

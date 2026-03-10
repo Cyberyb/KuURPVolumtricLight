@@ -27,6 +27,18 @@
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
 #include "../Shader/FogCommon.hlsl"
 
+// 局部体积雾数据结构体
+struct LocalFogData
+{
+    float3 center;
+    float density;
+    float3 extent;
+    float extinction;
+    float3 albedo;
+    float padding;
+    float4x4 worldToLocalMatrix;
+};
+
 
 RWTexture3D<float4> _OutputAttribute;
 RWTexture3D<float4> _OutputIntegrated;
@@ -39,7 +51,7 @@ Texture2D<float> _CameraDepthTex;
 SamplerState sampler_CameraDepthTex;
 
 Texture3D<float4> _PrevScatteringLight;
-SamplerState sampler_linear_clamp;
+SamplerState sampler_Bilinear_clamp;
 
 //网格相关参数
 float4 _VolumeSize;
@@ -73,6 +85,10 @@ float _GlobalAbsorb;
 float _PhaseG;
 float3 _GlobalAlbedo;
 float _GlobalExtinction;
+
+//局部体积雾参数
+StructuredBuffer<LocalFogData> _LocalFogData;
+uint _LocalFogCount;
 
 float VolumeLuminance( float3 LinearColor )
 {
@@ -311,30 +327,28 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float fogDensity = GetFogDensity(worldPosition);
     float extinction = _GlobalExtinction * fogDensity;
     float3 scattering = _GlobalAlbedo * extinction;
-    //float absorb = max(extinction - VolumeLuminance(scattering),0);
 
     //获取场景局部体积雾
-    // for(int i = 0; i < _LocalVolumeNum; i++)
-    // {
-    //     float4 localVolume = _LocalVolumes[i];
-    //     float3 localScatter = _LocalScatters[i].rgb;
-    //     float localExtinction = _LocalScatters[i].a;
-    //     //判断是否在局部体积内
-    //     if(all(localVolume.xyz - worldPosition < localVolume.w) && all(worldPosition - localVolume.xyz > -localVolume.w))
-    //     {
-    //         scattering += localScatter * localExtinction;
-    //         extinction += localExtinction;
-    //     }
-    // }
+    for(int i = 0; i < _LocalFogCount; i++)
+    {
+        LocalFogData localFog = _LocalFogData[i];
+        
+        //范围测试 - 检查点是否在局部雾的包围盒内
+        float3 froxelLocalPos = mul(localFog.worldToLocalMatrix, float4(worldPosition, 1)).xyz;
+        float distanceToEdge = length(localFog.extent - abs(froxelLocalPos));
+        if(any(abs(froxelLocalPos) > localFog.extent))
+            continue;
+
+        float localDensity = lerp(0, localFog.density, min(distanceToEdge * 0.3 / length(localFog.extent), 1));
+        //累加局部雾的贡献
+        float localExtinction = localDensity * localFog.extinction;
+        float3 localScattering = localFog.albedo * localExtinction;
+        extinction += localExtinction;
+        scattering += localScattering;
+    }
 
     //计算体积属性
-    
-    //if(worldPosition.z <= depth)
-        _OutputAttribute[id] = float4(scattering , extinction);
-    //else
-       //_OutputAttribute[id] = float4(1,0,0,1);
-    //_OutputAttribute[id] = float4(depth.rrr,1);
-    //_OutputAttribute[id] = float4(z.rrr,1); 
+    _OutputAttribute[id] = float4(scattering , extinction);
 }
 
 //计算In-Scattering
@@ -364,15 +378,15 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 #ifdef USE_TEMPORAL_REPROJECTION
     float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
     // 采样上一帧的散射纹理，获取历史散射值
-    float4 historyScattering = float4(0, 0, 0, 0);
+    float4 historyScatteringAndExtinction = float4(0, 0, 0, 0);
     bool isValidHistory = all(historyUV >= 0) && all(historyUV <= 1);
     if (isValidHistory)
     {
-        historyScattering = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_linear_clamp, historyUV, 0);
+        historyScatteringAndExtinction = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV, 0);
         //historyScattering = _PrevScatteringLight.SampleLevel(sampler_linear_clamp, historyUV, 0);
     }
 #else 
-    float4 historyScattering = float4(0, 0, 0, 0);
+    float4 historyScatteringAndExtinction = float4(0, 0, 0, 0);
 #endif
 
     float4 scatterAndextinction = _InputAttribute[id];
@@ -381,7 +395,7 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float3 scatter = scatterAndextinction.xyz * (dirLightScattering + addLightScattering);
     float4 finalScatterAndExtinction = float4(scatter, scatterAndextinction.a);
 
-    finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScattering, isValidHistory? _ReprojectWeight : 0.0f);
+    finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, isValidHistory? _ReprojectWeight : 0.0f);
 
     _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
