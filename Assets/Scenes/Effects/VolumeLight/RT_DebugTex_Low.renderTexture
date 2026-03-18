@@ -6,7 +6,7 @@ RenderTexture:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: RT_ScatteringLight
+  m_Name: RT_DebugTex_Low
   m_ImageContentsHash:
     serializedVersion: 2
     Hash: 00000000000000000000000000000000
@@ -14,8 +14,8 @@ RenderTexture:
   m_DownscaleFallback: 0
   m_IsAlphaChannelOptional: 0
   serializedVersion: 5
-  m_Width: 240
-  m_Height: 135
+  m_Width: 80
+  m_Height: 45
   m_AntiAliasing: 1
   m_MipCount: -1
   m_DepthStencilFormat: 0
@@ -25,7 +25,7 @@ RenderTexture:
   m_SRGB: 0
   m_UseDynamicScale: 0
   m_BindMS: 0
-  m_EnableCompatibleFormat: 1
+  m_EnableCompatibleFormat: 0
   m_EnableRandomWrite: 1
   m_TextureSettings:
     serializedVersion: 2

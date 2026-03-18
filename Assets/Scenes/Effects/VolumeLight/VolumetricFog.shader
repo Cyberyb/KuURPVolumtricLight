@@ -24,7 +24,6 @@
         
  
         
-        #pragma shader_feature_local USE_SCREEN_INTERGRATED_FOG
         //TEXTURE2D(_CameraDepthTexture);
         //SAMPLER(sampler_CameraDepthTexture);
 
@@ -55,6 +54,13 @@
 		    float4 uv23: TEXCOORD2;
 		    float4 uv45: TEXCOORD3;
             UNITY_VERTEX_INPUT_INSTANCE_ID
+        };
+
+        //MRT
+        struct FragOut
+        {
+            float4 target0 : SV_Target0;
+            float4 target1 : SV_Target1;
         };
         
         TEXTURE2D(_GrabTexture);
@@ -232,7 +238,7 @@
             return saturate(float3(clipPos.xy, z));
         }
 
-        float3 GetVolumetricFogColor(float3 worldPos, float3 backwardColor)
+        float4 GetVolumetricFogColor(float3 worldPos)
         {
             float4 ClipPos = mul(_World2Volume, float4(worldPos,1.0));
             #ifdef UNIFORM_DEPTH
@@ -241,7 +247,7 @@
             #else
                 float z = EncodeLogarithmicDepthGeneralized(ClipPos.w, _LogarithmicDepthEncodingParams);
             #endif
-            float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z,1.0f)));
+            float3 uvz = saturate(float3((ClipPos.xy / ClipPos.w) * 0.5 + 0.5, min(z - 0.02,1.0f)));
 
             int zSlice0 = floor(uvz.z * _VolumeSize.z);
             int zSlice1 = min(zSlice0 + 1, (int)_VolumeSize.z - 1);
@@ -252,21 +258,16 @@
             float3 uvz0 = float3(uvz.xy, zSlice0 / _VolumeSize.z);
             float3 uvz1 = float3(uvz.xy, zSlice1 / _VolumeSize.z);
 
-            #ifdef USE_SCREEN_INTERGRATED_FOG
-                float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE2D(_ScreenIntegrated, sampler_ScreenIntegrated, uvz.xy);
-            #else
-                float4 currInScatteringAndTransmittance0 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz0);
-                float4 currInScatteringAndTransmittance1 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz1);
-                float4 currInScatteringAndTransmittance = lerp(currInScatteringAndTransmittance0, currInScatteringAndTransmittance1, w2);
-            #endif
+            // float4 currInScatteringAndTransmittance0 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz0);
+            // float4 currInScatteringAndTransmittance1 = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz1);
+            // float4 currInScatteringAndTransmittance = lerp(currInScatteringAndTransmittance0, currInScatteringAndTransmittance1, w1);
+            float4 currInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, uvz);
             //重投影，获取上一帧的散射与消光系数
             //float3 preuvz = ReprojectVolumeXYZ(worldPos);
             //float4 preInScatteringAndTransmittance = SAMPLE_TEXTURE3D(_VolumeTexture, sampler_VolumeTexture, preuvz);
 
             //float4 inScatteringAndTransmittance = _ReprojectWeight * preInScatteringAndTransmittance + (1.0f - _ReprojectWeight) * currInScatteringAndTransmittance;
-            float4 inScatteringAndTransmittance = currInScatteringAndTransmittance;
-            return backwardColor * inScatteringAndTransmittance.a + inScatteringAndTransmittance.rgb;
-            //return uvz ;
+            return currInScatteringAndTransmittance;
         }
 
 
@@ -485,21 +486,36 @@
 
         }
 
-        //使用Voxel方法进行渲染
-        float4 frag_voxel(v2f i):SV_Target
+        float4 frag_screenIntegrated(v2f i):SV_Target
         {
-            
-            float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
+            //float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
 
             //从屏幕坐标到屏幕UV
             i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
 
             //深度重建世界坐标
             float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
-            float3 volumeFogColor = GetVolumetricFogColor(worldPos,sourceColor.rgb);
+            float4 volumeFogColor = GetVolumetricFogColor(worldPos);
+            return float4(volumeFogColor);
+        }
 
-            //return float4(worldPos,1.0);
-            return float4(volumeFogColor,1.0);
+        //使用Voxel方法进行渲染
+        float4 frag_voxel(v2f i):SV_Target
+        {
+            float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
+            float4 volumeFogColor = SAMPLE_TEXTURE2D(_ScreenIntegrated, sampler_PointClamp, i.uv);
+            float3 finalColor = sourceColor.rgb * volumeFogColor.a + volumeFogColor.rgb;
+            return float4(finalColor,1);
+
+            // float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
+
+            // //从屏幕坐标到屏幕UV
+            // i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
+
+            // //深度重建世界坐标
+            // float3 worldPos = DepthToWorldPosition(i.screen_uv.xy);
+            // float4 volumeFogColor = GetVolumetricFogColor(worldPos);
+            // return float4(sourceColor.rgb * volumeFogColor.a + volumeFogColor.rgb,1);
         }
 
 
@@ -572,6 +588,17 @@
 
             #pragma vertex vert
             #pragma fragment frag_voxel
+
+            ENDHLSL
+
+            }
+
+        Pass{
+            Name "ScreenIntegratedVoxelFog"
+            HLSLPROGRAM
+
+            #pragma vertex vert
+            #pragma fragment frag_screenIntegrated
 
             ENDHLSL
 

@@ -8,6 +8,21 @@ using UnityEngine.Experimental.Rendering.RenderGraphModule;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
+/// <summary>
+/// 局部体积雾数据结构体，用于传递给Shader
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct LocalFogData
+{
+    public Vector3 center;
+    public float density;
+    public Vector3 extent;
+    public float extinction;
+    public Vector3 albedo;
+    public float padding;
+    public Matrix4x4 worldToLocalMatrix;
+}
+
 
 public class VolumetricFogRenderPass : KuRenderPass
 {
@@ -31,6 +46,10 @@ public class VolumetricFogRenderPass : KuRenderPass
     private RenderTextureDescriptor stencilDescriptor;
     public RTHandle stencilHandle;
 
+    //体积雾散射积分纹理
+    private RenderTextureDescriptor integratedDescriptor;
+    public RTHandle integratedHandle;
+
     //Jitter纹理
     public Texture jitterTexture;
 
@@ -45,10 +64,15 @@ public class VolumetricFogRenderPass : KuRenderPass
     //History Scattering RenderTexture
     public RenderTexture prevScatteringTexture;
     public RenderTexture lowPrevScatteringTexture;
-
     public RenderTexture screenIntegratedTexture;
-
     private RenderTexture shadowmapTexture;
+
+    public RenderTexture debugTexture;
+
+    public RenderTexture debugTexture2;
+    
+    // 降采样深度纹理（1/8分辨率）
+    private RenderTexture downsampledDepthTexture;
 
     private Matrix4x4 preWorldToVolume;
     private Matrix4x4 worldToVolume;
@@ -56,6 +80,23 @@ public class VolumetricFogRenderPass : KuRenderPass
     private Matrix4x4 VP;
     
    private LocalKeyword screenIntergratedKeyword;
+   private LocalKeyword temporalReprojectKeyword;
+
+    //体素雾相关常量
+
+   public const int voxelTextureSizeX = 240;
+    public const int voxelTextureSizeY = 135;
+    public const int voxelTextureDepth = 64;
+    
+    // 局部体积雾相关常量
+    public const int MAX_LOCAL_FOG_COUNT = 16;
+
+    // 存储场景中的局部体积雾
+    private List<CubeLocalFog> localFogList = new List<CubeLocalFog>();
+    
+    // 局部体积雾ComputeBuffer
+    private ComputeBuffer localFogBuffer;
+    private LocalFogData[] localFogDataArray;
 
 
     VolumeStack stack = VolumeManager.instance.stack;
@@ -63,19 +104,19 @@ public class VolumetricFogRenderPass : KuRenderPass
     // Start is called before the first frame update
     public VolumetricFogRenderPass(RenderPassEvent evt, Shader shader, ComputeShader computeShader) : base(evt, shader, computeShader)
     {
-        textureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
+        textureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB32, 0);
 
-        blurTextureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
+        blurTextureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB32, 0);
 
-        blurTextureDescriptor2 = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
+        blurTextureDescriptor2 = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB32, 0);
 
-        sourceDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
+        sourceDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB32, 0);
 
         stencilDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.R8, 0);
 
-        
+        downSampleDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB32, 0);
 
-        downSampleDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.Default, 0);
+        integratedDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height, RenderTextureFormat.ARGB64, 0);
 
         if(computeShader != null)
             kucomputeShader = computeShader;
@@ -109,6 +150,7 @@ public class VolumetricFogRenderPass : KuRenderPass
 
         RenderingUtils.ReAllocateIfNeeded(ref stencilHandle, stencilDescriptor, FilterMode.Point, name: "_StencilTexture");
 
+        RenderingUtils.ReAllocateIfNeeded(ref integratedHandle, integratedDescriptor, FilterMode.Bilinear, name: "_IntegratedTexture");
         //获取Volume中保存的各项参数
         volume = stack.GetComponent<VolumeLight_Volume>();
 
@@ -118,6 +160,22 @@ public class VolumetricFogRenderPass : KuRenderPass
 
         RenderingUtils.ReAllocateIfNeeded(ref downSampleHandle, downSampleDescriptor, FilterMode.Bilinear, name: "_DownSampleTexture");
 
+        // 创建降采样深度纹理（分辨率为原来的1/8）
+        if (downsampledDepthTexture == null)
+        {
+            downsampledDepthTexture = new RenderTexture(
+                Mathf.Max(1, cameraTextureDescriptor.width / 8),
+                Mathf.Max(1, cameraTextureDescriptor.height / 8),
+                0,
+                RenderTextureFormat.RFloat)
+            {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Point,
+                name = "DownsampledDepth"
+            };
+            downsampledDepthTexture.Create();
+        }
+
         volumeTexture = ((VolumeLight_Volume)volume)._VolumeTexture.value;
         scatteringTexture = ((VolumeLight_Volume)volume)._ScatteringTexture.value;
         integratedTexture = ((VolumeLight_Volume)volume)._IntegratedTexture.value;
@@ -125,8 +183,11 @@ public class VolumetricFogRenderPass : KuRenderPass
         screenIntegratedTexture = ((VolumeLight_Volume)volume)._ScreenIntegratedTexture.value;
         jitterTexture = ((VolumeLight_Volume)volume)._JitterTexture.value;
 
+        debugTexture = ((VolumeLight_Volume)volume)._DebugTexture.value;
+        debugTexture2 = ((VolumeLight_Volume)volume)._DebugTexture2.value;
+
         //设置宏
-        screenIntergratedKeyword = new LocalKeyword(material.shader, "USE_SCREEN_INTERGRATED_FOG");
+        temporalReprojectKeyword = new LocalKeyword(kucomputeShader, "USE_TEMPORAL_REPROJECTION");
     }
 
     protected override void Render(CommandBuffer cmd, ref RenderingData renderingData)
@@ -199,8 +260,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         Vector3 cameraWorldPos = renderingData.cameraData.worldSpaceCameraPos;
 
         RTHandle cameraTargetHandle = renderingData.cameraData.renderer.cameraColorTargetHandle;
-
-
+            
         UpdateComputeValues(ref cmd, ref renderingData);
         UpdateValues(ref cmd, ref renderingData);
 
@@ -210,10 +270,18 @@ public class VolumetricFogRenderPass : KuRenderPass
 
         kucomputeShader.SetTexture(kernelIndex, "_OutputAttribute", volumeTexture);
 
-        kucomputeShader.Dispatch(kernelIndex, 256 / 8, 256 / 8, 64 / 8);
+        kucomputeShader.Dispatch(kernelIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
+
+        //CS1.5：相机深度下采样（可选，视性能需求而定）
+        // 在 RenderVoxelFog 中，CSMain 和 CSScatteringLight 之间添加
+        int downsampleIndex = kucomputeShader.FindKernel("CSDownsampleDepth");
+        //kucomputeShader.SetTexture(downsampleIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
+        kucomputeShader.SetTexture(downsampleIndex, "_DownsampledDepth", downsampledDepthTexture); // 需要创建这个纹理
+        kucomputeShader.Dispatch(downsampleIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, 1);
 
         //CS2: 计算散射
         int scatteringIndex = kucomputeShader.FindKernel("CSScatteringLight");
+        kucomputeShader.SetTexture(scatteringIndex, "_InDownsampledDepth", downsampledDepthTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_InputAttribute", volumeTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_OutputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_PrevScatteringLight", prevScatteringTexture);
@@ -222,26 +290,28 @@ public class VolumetricFogRenderPass : KuRenderPass
         //kucomputeShader.SetTexture(kernelIndex, "_MainLightShadowmapTexture", mainLightShadowmap);
         //kucomputeShader.SetTexture(kernelIndex, "_AdditionalLightsShadowmapTexture", renderingData.shadowData.additionalLightsShadowmapTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
-        kucomputeShader.Dispatch(scatteringIndex, 256 / 8, 256 / 8, 64 / 8);
+
+        kucomputeShader.SetTexture(scatteringIndex, "_DebugTexture", debugTexture);
+        kucomputeShader.SetTexture(scatteringIndex, "_DebugTexture2", debugTexture2);
+        
+
+        kucomputeShader.Dispatch(scatteringIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth  / 8);
 
         cmd.CopyTexture(scatteringTexture, prevScatteringTexture);
 
         //CS3: 计算积分
         int integrationIndex = kucomputeShader.FindKernel("CSIntegration");
-
-        if(screenIntegratedTexture != null)
-        {
-            kucomputeShader.SetTexture(integrationIndex, "_ScreenIntegrated", screenIntegratedTexture);
-        }
         kucomputeShader.SetTexture(integrationIndex, "_InputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(integrationIndex, "_OutputIntegrated", integratedTexture);
 
-        kucomputeShader.Dispatch(integrationIndex, 256 / 8, 256 / 8, 1);
-
-
+        kucomputeShader.Dispatch(integrationIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
         /*Vertex&Pixel Shader部分*/
         Blit(cmd, cameraTargetHandle, sourceHandle);
+        
+        Blit(cmd, cameraTargetHandle, integratedHandle, material, 6);
+
         Blit(cmd, sourceHandle, cameraTargetHandle, material, 5);
+        //cmd.Blit(sourceHandle, cameraTargetHandle, material, 5);
 
         //RTHandleRealse();
     }
@@ -249,7 +319,27 @@ public class VolumetricFogRenderPass : KuRenderPass
 
     protected override void Init()
     {
+        // 收集场景中所有的CubeLocalFog组件
+        CollectLocalFogs();
+    }
+    
+    /// <summary>
+    /// 收集场景中所有的CubeLocalFog组件
+    /// </summary>
+    private void CollectLocalFogs()
+    {
+        localFogList.Clear();
+        CubeLocalFog[] allLocalFogs = UnityEngine.Object.FindObjectsOfType<CubeLocalFog>();
         
+        if (allLocalFogs.Length > MAX_LOCAL_FOG_COUNT)
+        {
+            Debug.LogWarning($"场景中的CubeLocalFog数量({allLocalFogs.Length})超过最大支持数量({MAX_LOCAL_FOG_COUNT})，将只使用前{MAX_LOCAL_FOG_COUNT}个");
+        }
+        
+        for (int i = 0; i < Mathf.Min(allLocalFogs.Length, MAX_LOCAL_FOG_COUNT); i++)
+        {
+            localFogList.Add(allLocalFogs[i]);
+        }
     }
     private void UpdateValues(ref CommandBuffer cmd, ref RenderingData renderingData)
     {
@@ -270,17 +360,12 @@ public class VolumetricFogRenderPass : KuRenderPass
         // 设置体积纹理采样为双线性插值（3D纹理下为三线性）
         if (integratedTexture != null)
         {
-            //integratedTexture.filterMode = FilterMode.Bilinear;
+            integratedTexture.filterMode = FilterMode.Bilinear;
             material.SetTexture("_VolumeTexture", integratedTexture);
         }
 
         material.SetTexture("_JitterTexture", jitterTexture);
-        if(screenIntegratedTexture != null)
-        {
-            integratedTexture.filterMode = FilterMode.Bilinear;
-            material.SetTexture("_ScreenIntegrated", screenIntegratedTexture);
-        }
-            
+        material.SetTexture("_ScreenIntegrated", integratedHandle);
 
         material.SetFloat("_FovY", renderingData.cameraData.camera.fieldOfView);
         material.SetFloat("_Aspect", renderingData.cameraData.camera.aspect);
@@ -288,13 +373,14 @@ public class VolumetricFogRenderPass : KuRenderPass
         material.SetFloat("_Nearplane", renderingData.cameraData.camera.nearClipPlane);
     
         //宏定义
-        material.SetKeyword(screenIntergratedKeyword, ((VolumeLight_Volume)volume)._UseScreenIntergrated.value);
+        //material.SetKeyword(screenIntergratedKeyword, ((VolumeLight_Volume)volume)._UseScreenIntergrated.value);
     }
     private void UpdateComputeValues(ref CommandBuffer cmd, ref RenderingData renderingData)
     {
         //深度相关参数计算
         float farClip = ((VolumeLight_Volume)volume)._FarPlane.value;
         float nearClip = renderingData.cameraData.camera.nearClipPlane;
+        float cameraFarClip = renderingData.cameraData.camera.farClipPlane;
         Vector4 zParam = GetZParam(nearClip, farClip);
         GetInverseVP(renderingData.cameraData.camera, nearClip, farClip, out var inverseV, out var volumeToWorld, ref worldToVolume);
         //material.SetMatrix("_InvV", renderingData.cameraData.camera.worldToCameraMatrix.inverse);
@@ -318,7 +404,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         cmd.SetGlobalMatrix("_VP", renderingData.cameraData.camera.projectionMatrix * renderingData.cameraData.camera.worldToCameraMatrix);
         //cmd.SetComputeFloatParam(kucomputeShader, "_Farplane", farClip);
         cmd.SetComputeFloatParam(kucomputeShader, "_Nearplane", nearClip);
-        cmd.SetComputeVectorParam(kucomputeShader, "_VolumeSize", new Vector4(256, 256, 64, 1));
+        cmd.SetGlobalVector("_VolumeSize", new Vector4(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth, 1));
         cmd.SetGlobalVector("_ZParam", zParam);
         cmd.SetGlobalVector("_LogarithmicDepthDecodingParams", logarithmicDepthDecodingParams);
         cmd.SetGlobalVector("_LogarithmicDepthEncodingParams", logarithmicDepthEncodingParams);
@@ -335,7 +421,68 @@ public class VolumetricFogRenderPass : KuRenderPass
         cmd.SetComputeVectorParam(kucomputeShader, "_GlobalAlbedo", ((VolumeLight_Volume)volume)._GlobalAlbedo.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_GlobalExtinction", ((VolumeLight_Volume)volume)._GlobalExtinction.value);
         cmd.SetComputeFloatParam(kucomputeShader, "_PhaseG", ((VolumeLight_Volume)volume)._PhaseG.value);
+        //设置宏
+        kucomputeShader.SetKeyword(temporalReprojectKeyword, ((VolumeLight_Volume)volume)._UseTemporalReproject.value);
+
+        // 设置局部体积雾参数
+        SetLocalFogParameters(cmd);
+    }
+    
+    /// <summary>
+    /// 将局部体积雾参数传递给Shader
+    /// </summary>
+    private void SetLocalFogParameters(CommandBuffer cmd)
+    {
+        // 重新收集本地雾（支持运行时添加/删除）
+        CollectLocalFogs();
         
+        int fogCount = localFogList.Count;
+        
+        // 如果雾的数量为0，则不需要设置
+        if (fogCount == 0)
+        {
+            cmd.SetComputeIntParam(kucomputeShader, "_LocalFogCount", 0);
+            return;
+        }
+        
+        // 初始化数组（如果还没有或大小不匹配）
+        if (localFogDataArray == null || localFogDataArray.Length != fogCount)
+        {
+            localFogDataArray = new LocalFogData[fogCount];
+        }
+        
+        // 填充数组数据
+        for (int i = 0; i < fogCount; i++)
+        {
+            LocalFog fog = localFogList[i].GetLocalFog();
+            if (fog == null)
+                continue;
+            
+            localFogDataArray[i] = new LocalFogData
+            {
+                center = fog.center,
+                density = fog.density,
+                extent = fog.extent,
+                extinction = fog.extinction,
+                albedo = fog.albedo,
+                padding = 0,
+                worldToLocalMatrix = fog.worldToLocalMatrix
+            };
+        }
+        
+        // 重新创建ComputeBuffer（如果大小改变）
+        if (localFogBuffer == null || localFogBuffer.count != fogCount)
+        {
+            localFogBuffer?.Release();
+            localFogBuffer = new ComputeBuffer(fogCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(LocalFogData)));
+        }
+        
+        // 设置ComputeBuffer数据
+        localFogBuffer.SetData(localFogDataArray, 0, 0, fogCount);
+        
+        // 传递ComputeBuffer和数量到Shader
+        cmd.SetComputeBufferParam(kucomputeShader, kucomputeShader.FindKernel("CSMain"), "_LocalFogData", localFogBuffer);
+        cmd.SetComputeIntParam(kucomputeShader, "_LocalFogCount", fogCount);
     }
     private void RTHandleRealse()
     {
@@ -346,6 +493,14 @@ public class VolumetricFogRenderPass : KuRenderPass
         if (stencilHandle != null) { stencilHandle.Release(); }
         if (downSampleHandle != null) { downSampleHandle.Release(); }
         if (volumeTexture != null) { volumeTexture.Release(); }
+        if (downsampledDepthTexture != null) { downsampledDepthTexture.Release(); }
+        
+        // 释放局部体积雾ComputeBuffer
+        if (localFogBuffer != null)
+        {
+            localFogBuffer.Release();
+            localFogBuffer = null;
+        }
     }
 
     public new void Dispose()

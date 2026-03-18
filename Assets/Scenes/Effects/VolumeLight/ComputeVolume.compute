@@ -2,6 +2,7 @@
 #pragma kernel CSMain
 #pragma kernel CSScatteringLight
 #pragma kernel CSIntegration
+#pragma kernel CSDownsampleDepth
 // Create a RenderTexture with enableRandomWrite flag and set it
 // with cs.SetTexture
 #define UNITY_REVERSED_Z 1
@@ -15,7 +16,8 @@
 #define _ADDITIONAL_LIGHT_SHADOWS
 #define _ADDITIONAL_LIGHT_SHADOWS_CASCADE
 
-#define USE_TEMPORAL_REPROJECTION
+#pragma multi_compile_local _ USE_TEMPORAL_REPROJECTION
+//#define USE_TEMPORAL_REPROJECTION
 
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -45,7 +47,11 @@ RWTexture3D<float4> _OutputIntegrated;
 RWTexture3D<float4> _InputScatteringLight;
 RWTexture3D<float4> _InputAttribute;
 RWTexture3D<float4> _OutputScatteringLight;
-RWTexture2D<float4> _ScreenIntegrated;
+RWTexture2D<float> _DownsampledDepth;
+RWTexture2D<float> _InDownsampledDepth;
+
+RWTexture3D<float4> _DebugTexture;
+RWTexture3D<float4> _DebugTexture2;
 
 Texture2D<float> _CameraDepthTex;
 SamplerState sampler_CameraDepthTex;
@@ -133,7 +139,7 @@ float3 GetGridCellPosByLog(uint3 id, float3 gridBias)
     float3 uvz = saturate(gridPos / volumeSize);
     float viewZ = DecodeLogarithmicDepthGeneralized(uvz.z, _LogarithmicDepthDecodingParams);
 #if UNITY_REVERSED_Z
-            float devZ = (1 - EyeDepthToProj(viewZ, _ZParam)) * 2 - 1;
+    float devZ = (1 - EyeDepthToProj(viewZ, _ZParam)) * 2 - 1;
 #else
     float devZ = EyeDepthToProj(viewZ, _ZParam) * 2 - 1;
 #endif
@@ -309,6 +315,12 @@ float3 EvaluateLight_Addition(float3 worldPos)
     return lightColor;
 }
 
+float GetAdaptiveReprojectWeight(float x)
+{
+    //max(min(1.0, (1.0 - pow(2, 2 * luminanceDifference - 10))), 0.5)
+    return x < 0.5 ? 16 * x * x * x * x * x : 1 - pow(-2 * x + 2, 5) / 2;
+}
+
 //存放属性
 [numthreads(8,8,8)]
 void CSMain (uint3 id : SV_DispatchThreadID)
@@ -322,6 +334,10 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     //根据id定位grid的世界坐标
     float3 gridBias = float3(0.5f,0.5f,0.5f);
     float3 worldPosition = FroxelToWorldPos(id, gridBias);
+
+    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz * 2.0f - 1.0f;
+    float3 jitterBias = _FrameJitterValue + _JitterWeight * rand3D;
+    float3 jitterWorldPosition = FroxelToWorldPos(id, jitterBias);
     
     //获取密度
     float fogDensity = GetFogDensity(worldPosition);
@@ -334,7 +350,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         LocalFogData localFog = _LocalFogData[i];
         
         //范围测试 - 检查点是否在局部雾的包围盒内
-        float3 froxelLocalPos = mul(localFog.worldToLocalMatrix, float4(worldPosition, 1)).xyz;
+        float3 froxelLocalPos = mul(localFog.worldToLocalMatrix, float4(jitterWorldPosition, 1)).xyz;
         float distanceToEdge = length(localFog.extent - abs(froxelLocalPos));
         if(any(abs(froxelLocalPos) > localFog.extent))
             continue;
@@ -359,44 +375,59 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float3 worldPosition = FroxelToWorldPos(id, gridBias);
 
     //Jitter采样
-    //float jitterZ = GetRandomNum(float2(id.xy));
-    //float3 jitterBias = float3(gridBias.xy, jitterZ);
-    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz * 2.0f - 1.0f;
+    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz - 1.0f;
+    float3 lastFrameRand3D = Rand4DPCG32_01(int4(id, (_FrameNumberMod8 + 7) % 8)).xyz - 0.5f;
     float3 jitterBias = _FrameJitterValue + _JitterWeight * rand3D;
+    //float3 jitterBias = _JitterWeight * rand3D;
+    float3 lastFrameJitterBias = _FrameJitterValue + _JitterWeight * lastFrameRand3D;
     float3 jitterWorldPosition = FroxelToWorldPos(id, jitterBias);
-
+    float3 lastFrameJitterWorldPosition = FroxelToWorldPos(id, lastFrameJitterBias);
+    float jitterDistance = distance(jitterWorldPosition, worldPosition);
     //深度测试，被遮挡的体素不计算散射
-    float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy), 0).r;
+    float2 depthSampleUV = (float2(id.xy)  + float2(0.5,0.5))/ float2(_VolumeSize.xy);
+    float deviceDepth = _InDownsampledDepth[id.xy];
+    //float deviceDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, depthSampleUV, 0).r;
     //计算出NDC空间的z值（第二种方法可以先算出UV再转为NDC，就不用矩阵了）
     float4 clipPos = mul(_VP, float4(worldPosition, 1.0));
     clipPos /= clipPos.w;
     if(1 - deviceDepth < clipPos.z)
     {
+        _DebugTexture[id] = float4(0,0,0,0);
         _OutputScatteringLight[id] = float4(0,0,0,0);
         return;
     }
 #ifdef USE_TEMPORAL_REPROJECTION
     float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
+    float3 historyUV_Jitter = ComputeHistoryVolumeUV(lastFrameJitterWorldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
     // 采样上一帧的散射纹理，获取历史散射值
+    float3 uvDistance = historyUV_Jitter - (id+jitterBias)/_VolumeSize.xyz;
     float4 historyScatteringAndExtinction = float4(0, 0, 0, 0);
+    float4 historyScatteringAndExtinction_Jitter = float4(0, 0, 0, 0);
+    float historyLuminance = 0;
     bool isValidHistory = all(historyUV >= 0) && all(historyUV <= 1);
     if (isValidHistory)
     {
         historyScatteringAndExtinction = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV, 0);
+        historyScatteringAndExtinction_Jitter = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV_Jitter, 0);
+        historyLuminance = VolumeLuminance(historyScatteringAndExtinction_Jitter.xyz);
         //historyScattering = _PrevScatteringLight.SampleLevel(sampler_linear_clamp, historyUV, 0);
     }
 #else 
     float4 historyScatteringAndExtinction = float4(0, 0, 0, 0);
+    float historyLuminance = 0;
+    bool isValidHistory = false;
 #endif
 
     float4 scatterAndextinction = _InputAttribute[id];
     float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
     float3 addLightScattering = EvaluateLight_Addition(jitterWorldPosition);
     float3 scatter = scatterAndextinction.xyz * (dirLightScattering + addLightScattering);
+    float luminance = VolumeLuminance(dirLightScattering + addLightScattering);
     float4 finalScatterAndExtinction = float4(scatter, scatterAndextinction.a);
-
+    float luminanceDifference = clamp(abs(luminance - historyLuminance)/4, 0.0, 1.0);
+    float adaptiveReprojectWeight = clamp(1.0 - 0.8 * GetAdaptiveReprojectWeight(0.5 * luminanceDifference), 0.2, 1.0) * _ReprojectWeight; //根据亮度差异调整权重，差异越大权重越小
     finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, isValidHistory? _ReprojectWeight : 0.0f);
-
+    _DebugTexture[id] = float4(worldPosition, 1);
     _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
 
@@ -435,6 +466,36 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
         
         _OutputIntegrated[pos] = float4(totalRadiance,totalTransmittance);
     }
-    _ScreenIntegrated[id.xy] = float4(totalRadiance,totalTransmittance);
     
+}
+
+//Step between CSMain and CSScatteringLight, downsample depth texture to improve performance of scattering calculation.
+[numthreads(8, 8, 1)]
+void CSDownsampleDepth(uint3 id : SV_DispatchThreadID)
+{
+    float2 uv = (float2(id.xy) + 0.5)/ _VolumeSize.xy; // 采样原始纹理坐标
+    
+    // 在逆深度模式下，最远的物体深度值最小，所以取min获得最远深度
+    float minDepth = 1.0;
+    // for(int x = 0; x < 8; x++)
+    // {
+    //     for(int y = 0; y < 8; y++)
+    //     {
+    //         float2 sampleUV = uv + float2(x-4, y-4) / _VolumeSize.xy;
+    //         float depth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, sampleUV, 0).r;
+    //         minDepth = min(minDepth, depth);
+    //     }
+    // }
+    for(int x = 0; x < 2; x++)
+    {
+        for(int y = 0; y < 2; y++)
+        {
+            float2 sampleUV = uv + float2(x * 8 - 4, y * 8 - 4) / _VolumeSize.xy;
+            float depth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, sampleUV, 0).r;
+            minDepth = min(minDepth, depth);
+        }
+    }
+    minDepth = min(minDepth, _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, uv, 0).r); 
+    
+    _DownsampledDepth[id.xy] = minDepth;
 }
