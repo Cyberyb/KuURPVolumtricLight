@@ -35,6 +35,7 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     public RenderTextureParameter _PrevScatteringTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _LowPrevScatteringTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _ScreenIntegratedTexture = new RenderTextureParameter(null);
+    public RenderTextureParameter _LightGridsTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _DebugTexture = new RenderTextureParameter(null);
     public RenderTextureParameter _DebugTexture2 = new RenderTextureParameter(null);
 

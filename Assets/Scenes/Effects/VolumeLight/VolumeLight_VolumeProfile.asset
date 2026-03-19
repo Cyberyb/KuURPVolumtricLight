@@ -82,6 +82,9 @@ MonoBehaviour:
   _ScreenIntegratedTexture:
     m_OverrideState: 1
     m_Value: {fileID: 8400000, guid: c84f3705925a7c74897f8fc33fd52c58, type: 2}
+  _LightGridsTexture:
+    m_OverrideState: 1
+    m_Value: {fileID: 8400000, guid: 8a461ef28e74ec14dbc6f49f076f8c52, type: 2}
   _DebugTexture:
     m_OverrideState: 1
     m_Value: {fileID: 8400000, guid: af2b5de6715bfad47b9fdcdfc6dcafdc, type: 2}
@@ -123,4 +126,4 @@ MonoBehaviour:
     m_Value: 0.132
   _ReprojectWeight:
     m_OverrideState: 1
-    m_Value: 0.942
+    m_Value: 0.965
