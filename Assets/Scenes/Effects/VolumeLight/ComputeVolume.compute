@@ -41,6 +41,18 @@ struct LocalFogData
     float4x4 worldToLocalMatrix;
 };
 
+// 点光源数据结构体
+// 字节对齐：position(12) + range(4) + minVoxel(12) + paddingA(4) + maxVoxel(12) + paddingB(4) = 48 bytes
+struct PointLightData
+{
+    float3 position;    // 世界空间光源位置 (12 bytes)
+    float range;        // 光源范围 (4 bytes)
+    int3 minVoxel;      // 体素空间最小坐标 (12 bytes)
+    int paddingA;       // 对齐填充 (4 bytes)
+    int3 maxVoxel;      // 体素空间最大坐标 (12 bytes)
+    int paddingB;       // 对齐填充 (4 bytes)
+};
+
 
 RWTexture3D<float4> _OutputAttribute;
 RWTexture3D<float4> _OutputIntegrated;
@@ -49,6 +61,7 @@ RWTexture3D<float4> _InputAttribute;
 RWTexture3D<float4> _OutputScatteringLight;
 RWTexture2D<float> _DownsampledDepth;
 RWTexture2D<float> _InDownsampledDepth;
+RWTexture3D<float2> _LightGridsTexture;
 
 RWTexture3D<float4> _DebugTexture;
 RWTexture3D<float4> _DebugTexture2;
@@ -95,6 +108,10 @@ float _GlobalExtinction;
 //局部体积雾参数
 StructuredBuffer<LocalFogData> _LocalFogData;
 uint _LocalFogCount;
+
+//点光源参数
+StructuredBuffer<PointLightData> _PointLightData;
+int _PointLightCount;
 
 float VolumeLuminance( float3 LinearColor )
 {
@@ -386,6 +403,29 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
     //计算体积属性
     _OutputAttribute[id] = float4(scattering , extinction);
+    
+    //✨ 检查当前体素是否被点光源覆盖
+    float isInLight = 0.0;
+    int lightCount = 0;
+    
+    for(int j = 0; j < _PointLightCount; j++)
+    {
+        PointLightData light = _PointLightData[j];
+        
+        // 检查当前体素id是否在light的minVoxel到maxVoxel范围内
+        int3 idAsInt = int3(id);
+        if(all(idAsInt >= light.minVoxel) && all(idAsInt <= light.maxVoxel))
+        {
+            isInLight = 1.0;
+            lightCount++;
+        }
+    }
+
+    float4 shadowPos = TransformWorldToShadowCoord(worldPosition);
+    float shadowAttenuation = MainLightRealtimeShadow(shadowPos);
+    
+    // 写入光源网格纹理：x为是否被覆盖(0/1)，y为覆盖的点光源计数
+    _LightGridsTexture[id] = float2(isInLight, shadowAttenuation);
 }
 
 //计算In-Scattering
@@ -396,9 +436,9 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float3 worldPosition = FroxelToWorldPos(id, gridBias);
 
     //Jitter采样
-    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz - 1.0f;
+    float3 rand3D = Rand4DPCG32_01(int4(id, _FrameNumberMod8)).xyz - 0.5f;
     float3 lastFrameRand3D = Rand4DPCG32_01(int4(id, (_FrameNumberMod8 + 7) % 8)).xyz - 0.5f;
-    float3 jitterBias = _FrameJitterValue * _JitterWeight;
+    float3 jitterBias = _FrameJitterValue + _JitterWeight * rand3D;
     //经过实验白噪声效果不好
     //float3 jitterBias = _JitterWeight * rand3D;
     float3 lastFrameJitterBias = _FrameJitterValue + _JitterWeight * lastFrameRand3D;
@@ -424,14 +464,23 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float4 scatterAndextinction = _InputAttribute[id];
     float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
     float3 addLightScattering = EvaluateLight_Addition(jitterWorldPosition).xyz;
+    int isInLight = _LightGridsTexture[id].x;
 
-    for(int i = 0; i < 3; i++)
-    {
-        float3 gridBias = float3(0.5f,0.5f,0.25f* (i + 1)) ;
-        float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
-        addLightScattering += EvaluateLight_Addition(jitterLightPosition).xyz;
-    }
-    addLightScattering /= 4;
+    int sampleCount = min(floor(clipPos.z * 5),4);
+    sampleCount *= isInLight;
+    //sampleCount = 3;
+    //uint sampleCount = 4;
+    //if(isInLight == 1)
+    //{
+        for(int i = 0; i < sampleCount - 1; i++)
+        {
+            float3 gridBias = float3(0.5f,0.5f, 1.0f/ sampleCount * (i + 1)) ;
+            float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
+            addLightScattering += EvaluateLight_Addition(jitterLightPosition).xyz;
+        }
+        addLightScattering /= max(sampleCount,1);
+    //}
+
     
      
     float3 scatter = scatterAndextinction.xyz * (dirLightScattering + addLightScattering);
@@ -440,7 +489,7 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     //重投影
 #ifdef USE_TEMPORAL_REPROJECTION
-    float weight = _ReprojectWeight;
+    float weight = _ReprojectWeight;    
     float3 historyUV = ComputeHistoryVolumeUV(worldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
     float3 historyUV_Jitter = ComputeHistoryVolumeUV(lastFrameJitterWorldPosition, _PrevVP, _LogarithmicDepthEncodingParams);
     // 采样上一帧的散射纹理，获取历史散射值
@@ -453,9 +502,10 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     if (isValidHistory)
     {
         historyScatteringAndExtinction = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV, 0);
+        weight *= step(0.01f, historyScatteringAndExtinction.w); //如果历史消光值过小，说明历史数据不可靠，权重设为0
         historyScatteringAndExtinction_Jitter = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV_Jitter, 0);
         float3 scatteringDifference = abs(historyScatteringAndExtinction.xyz - scatter);
-        float threshold = max(0.05, VolumeLuminance(scatter) * 10000);
+        float threshold = max(0.05, VolumeLuminance(scatter) + 1.0f);
         clampedHistoryScatter = clamp(historyScatteringAndExtinction.xyz, scatter - threshold, scatter + threshold);
         historyLuminance = VolumeLuminance(clampedHistoryScatter);
         //historyScattering = _PrevScatteringLight.SampleLevel(sampler_linear_clamp, historyUV, 0);
@@ -472,10 +522,10 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     //重投影混合
     //historyScatteringAndExtinction = float4(clampedHistoryScatter, historyScatteringAndExtinction.w);
-    float luminanceDifference = clamp(abs(luminance - historyLuminance)/4, 0.0, 1.0);
-    float adaptiveReprojectWeight = clamp(1.0 - 0.9 * GetAdaptiveReprojectWeight(luminanceDifference), 0.1, 1.0) * weight; //根据亮度差异调整权重，差异越大权重越小
-    finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, weight);
-    _DebugTexture[id] = float4(adaptiveReprojectWeight,1,1,1);
+    float luminanceDifference = clamp(abs(luminance - historyLuminance), 0.0, 1.0);
+    float adaptiveReprojectWeight = clamp(1.0 -  GetAdaptiveReprojectWeight(luminanceDifference), 0.0, 1.0) * weight; //根据亮度差异调整权重，差异越大权重越小
+    finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, adaptiveReprojectWeight);
+    _DebugTexture[id] = float4(0, 0, 0, 1);
     _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
 

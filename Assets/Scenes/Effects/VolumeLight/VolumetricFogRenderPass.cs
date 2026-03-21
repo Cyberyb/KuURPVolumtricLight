@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using Unity.Mathematics;
+//using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering.RenderGraphModule;
 using UnityEngine.Rendering;
@@ -24,15 +25,17 @@ public struct LocalFogData
 }
 
 /// <summary>
-/// 点光源AABB包围盒数据结构体
+/// 点光源数据结构体
 /// </summary>
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-public struct PointLightAABB
+public struct PointLightData
 {
-    public Vector3 min;  // 包围盒最小点
-    public float padding1;
-    public Vector3 max;  // 包围盒最大点
-    public float padding2;
+    public Vector3 position;      // 光源世界位置
+    public float range;           // 光源范围
+    public Vector3Int minVoxel;   // 体素范围最小值
+    public int paddingA;          // 对齐填充
+    public Vector3Int maxVoxel;   // 体素范围最大值
+    public int paddingB;          // 对齐填充
 }
 
 
@@ -111,11 +114,11 @@ public class VolumetricFogRenderPass : KuRenderPass
     private ComputeBuffer localFogBuffer;
     private LocalFogData[] localFogDataArray;
 
-    // 点光源AABB相关
+    // 点光源数据相关
     public const int MAX_POINT_LIGHT_COUNT = 32;
     private List<Light> pointLightList = new List<Light>();
-    private ComputeBuffer pointLightAABBBuffer;
-    private PointLightAABB[] pointLightAABBArray;
+    private ComputeBuffer pointLightDataBuffer;
+    private PointLightData[] pointLightDataArray;
 
     private List<VisibleLight> visibleLightList = new List<VisibleLight>();
 
@@ -290,7 +293,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         int kernelIndex = kucomputeShader.FindKernel("CSMain");
 
         kucomputeShader.SetTexture(kernelIndex, "_OutputAttribute", volumeTexture);
-
+        kucomputeShader.SetTexture(kernelIndex,"_LightGridsTexture", lightGridsTexture);
         kucomputeShader.Dispatch(kernelIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
 
         //CS1.5：相机深度下采样（可选，视性能需求而定）
@@ -303,6 +306,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         //CS2: 计算散射
         int scatteringIndex = kucomputeShader.FindKernel("CSScatteringLight");
         kucomputeShader.SetTexture(scatteringIndex, "_InDownsampledDepth", downsampledDepthTexture);
+        kucomputeShader.SetTexture(scatteringIndex, "_LightGridsTexture", lightGridsTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_InputAttribute", volumeTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_OutputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_PrevScatteringLight", prevScatteringTexture);
@@ -408,10 +412,10 @@ public class VolumetricFogRenderPass : KuRenderPass
             Debug.LogWarning($"场景中的点光源数量({visibleLights.Length})超过最大支持数量({MAX_POINT_LIGHT_COUNT})，将只使用前{MAX_POINT_LIGHT_COUNT}个");
         }
         
-        Debug.Log($"从RenderingData收集{pointLightCount}个点光源，{spotLightCount}个聚光灯 (URP额外光源数: {additionalLightsCount})");
+        //Debug.Log($"从RenderingData收集{pointLightCount}个点光源，{spotLightCount}个聚光灯 (URP额外光源数: {additionalLightsCount})");
     }
     
-    private void UpdatePointLightAABBs()
+    private void UpdatePointLightData()
     {
         int lightCount = visibleLightList.Count;
         
@@ -421,9 +425,9 @@ public class VolumetricFogRenderPass : KuRenderPass
         }
         
         // 初始化数组（如果还没有或大小不匹配）
-        if (pointLightAABBArray == null || pointLightAABBArray.Length != lightCount)
+        if (pointLightDataArray == null || pointLightDataArray.Length != lightCount)
         {
-            pointLightAABBArray = new PointLightAABB[lightCount];
+            pointLightDataArray = new PointLightData[lightCount];
         }
         
         // 填充数组数据
@@ -433,74 +437,110 @@ public class VolumetricFogRenderPass : KuRenderPass
             Vector3 lightPos = visibleLight.light.transform.position;
             float lightRange = visibleLight.range;
             
-            // 计算AABB包围盒（以光源位置为中心）
-            Vector3 extents = Vector3.one * lightRange;
-            
-            pointLightAABBArray[i] = new PointLightAABB
+            pointLightDataArray[i] = new PointLightData
             {
-                min = lightPos - extents,
-                max = lightPos + extents,
-                padding1 = 0,
-                padding2 = 0
+                position = lightPos,
+                range = lightRange,
+                minVoxel = Vector3Int.zero,
+                maxVoxel = Vector3Int.zero,
+                paddingA = 0,
+                paddingB = 0
             };
         }
         
-        // 重新创建ComputeBuffer（如果大小改变）
-        if (pointLightAABBBuffer == null || pointLightAABBBuffer.count != lightCount)
+        // 重新创建ComputeBuffer（仅在大小改变时）
+        if (pointLightDataBuffer == null || pointLightDataBuffer.count != lightCount)
         {
-            pointLightAABBBuffer?.Release();
-            pointLightAABBBuffer = new ComputeBuffer(lightCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightAABB)));
+            pointLightDataBuffer?.Release();
+            pointLightDataBuffer = new ComputeBuffer(lightCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightData)));
         }
         
-        // 设置ComputeBuffer数据
-        pointLightAABBBuffer.SetData(pointLightAABBArray, 0, 0, lightCount);
+        // ✨ 注意：不在这里调用 SetData()，等待体素范围数据更新完成后再统一提交
     }
     
     /// <summary>
-    /// 计算AABB在视锥体空间中的体素范围
+    /// 更新点光源体素范围数据（仅更新数组，不提交到GPU）
+    /// </summary>
+    private void UpdatePointLightVoxelData(Matrix4x4 worldToVolume, Vector4 encodingParams)
+    {
+        int lightCount = visibleLightList.Count;
+        
+        if (lightCount == 0 || pointLightDataArray == null)
+        {
+            return;
+        }
+        
+        // 为每个光源计算体素范围
+        for (int i = 0; i < lightCount; i++)
+        {
+            var (minVoxel, maxVoxel) = GetLightVoxelRange(i, worldToVolume, encodingParams);
+            
+            // 更新数组中的体素范围数据
+            pointLightDataArray[i].minVoxel = minVoxel;
+            pointLightDataArray[i].maxVoxel = maxVoxel;
+        }
+        
+        // ✨ 注意：不在这里调用 SetData()，由调用者负责统一提交
+    }
+    
+    /// <summary>
+    /// 计算光源在视锥体素空间中的体素范围
     /// </summary>
     private (Vector3Int minVoxel, Vector3Int maxVoxel) GetLightVoxelRange(int lightIndex, Matrix4x4 worldToVolume, Vector4 encodingParams)
     {
-        if (lightIndex < 0 || lightIndex >= pointLightAABBArray.Length)
+        if (lightIndex < 0 || lightIndex >= pointLightDataArray.Length)
             return (Vector3Int.zero, Vector3Int.zero);
         
-        PointLightAABB aabb = pointLightAABBArray[lightIndex];
+        //处理点光源
+        PointLightData lightData = pointLightDataArray[lightIndex];
+        Vector3 cameraPos = Camera.main.transform.position;
+        Vector3 cameraUp = Camera.main.transform.up;
+        Vector3 cameraForward = Camera.main.transform.forward;
         
-        // 将AABB的min和max点转换到体积空间（裁剪空间）
-        Vector4 minClipPos = worldToVolume * new Vector4(aabb.min.x, aabb.min.y, aabb.min.z, 1);
-        Vector4 maxClipPos = worldToVolume * new Vector4(aabb.max.x, aabb.max.y, aabb.max.z, 1);
-        float minZ = EncodeLogarithmicDepthGeneralized(minClipPos.w, encodingParams);
-        float maxZ = EncodeLogarithmicDepthGeneralized(maxClipPos.w, encodingParams);
+        Vector3 lightToCamera = Vector3.Normalize(-cameraForward);
+        Vector3 lightRight = Vector3.Normalize(Vector3.Cross(cameraUp, lightToCamera));
+        Vector3 lightUp = Vector3.Normalize(cameraUp);
+        Vector3 aabbMin = lightData.position + lightRight * lightData.range - lightUp * lightData.range + lightToCamera * lightData.range;
+        //Debug.Log("aabbMin:" + aabbMin);
+        Vector3 aabbMax = lightData.position - lightRight * lightData.range + lightUp * lightData.range - lightToCamera * lightData.range;
         
-        Vector3 minVolumePos = new Vector3((minClipPos.x / minClipPos.w) * 0.5f + 0.5f, (minClipPos.y / minClipPos.w) * 0.5f + 0.5f, minZ);
-        Vector3 maxVolumePos = new Vector3((maxClipPos.x / maxClipPos.w) * 0.5f + 0.5f, (maxClipPos.y / maxClipPos.w) * 0.5f + 0.5f, maxZ);
-        // 确保min和max的顺序正确
-        Vector3 volumeMin = Vector3.Min(minVolumePos, maxVolumePos);
-        Vector3 volumeMax = Vector3.Max(minVolumePos, maxVolumePos);
-        
-        // 转换为体素索引
-        Vector3Int minVoxel = Vector3Int.FloorToInt(Vector3.Scale(volumeMin, new Vector3(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth)));
-        Vector3Int maxVoxel = Vector3Int.CeilToInt(Vector3.Scale(volumeMax, new Vector3(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth)));
-        
-        // 钳制到有效范围
-        minVoxel = Vector3Int.Max(minVoxel, Vector3Int.zero);
-        maxVoxel = Vector3Int.Min(maxVoxel, new Vector3Int(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth) - Vector3Int.one);
+        Vector3Int minVoxel = GetPointVoxelIndex(aabbMin, worldToVolume, encodingParams);
+        Vector3Int maxVoxel = GetPointVoxelIndex(aabbMax, worldToVolume, encodingParams);
         
         return (minVoxel, maxVoxel);
+        //return (Vector3Int.zero, Vector3Int.zero);
     }
     
+
+    /// <summary>
+    /// 计算单个坐标在体素空间中的体素索引
+    /// </summary>
+    private Vector3Int GetPointVoxelIndex(Vector3 worldPos, Matrix4x4 worldToVolume, Vector4 encodingParams)
+    {
+        Vector4 clipPos = worldToVolume * new Vector4(worldPos.x, worldPos.y, worldPos.z, 1);
+        float z = EncodeLogarithmicDepthGeneralized(clipPos.w, encodingParams);
+        float ndcX = clipPos.x / clipPos.w;
+        float ndcY = clipPos.y / clipPos.w;
+        Vector3 uvz = new Vector3(clipPos.x / clipPos.w * 0.5f + 0.5f, clipPos.y / clipPos.w * 0.5f + 0.5f, z);
+        Vector3 volumePos = new Vector3(uvz.x, uvz.y, uvz.z);
+        Vector3Int voxelIndex = Vector3Int.FloorToInt(Vector3.Scale(volumePos, new Vector3(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth)));
+        // 钳制到有效范围
+        voxelIndex = Vector3Int.Max(voxelIndex, Vector3Int.zero);
+        voxelIndex = Vector3Int.Min(voxelIndex, new Vector3Int(voxelTextureSizeX, voxelTextureSizeY, voxelTextureDepth) - Vector3Int.one);
+        return voxelIndex;
+    }
+
     /// <summary>
     /// 获取所有光源的体素范围（调试用）
     /// </summary>
     public void DebugPrintLightVoxelRanges(Matrix4x4 worldToVolume, Vector4 encodingParams)
     {
         //Debug.Log($"========== 点光源体素范围调试信息 ==========");
-        for (int i = 0; i < pointLightAABBArray.Length; i++)
+        for (int i = 0; i < pointLightDataArray.Length; i++)
         {
             var (minVoxel, maxVoxel) = GetLightVoxelRange(i, worldToVolume, encodingParams);
-            PointLightAABB aabb = pointLightAABBArray[i];
-            //Debug.Log($"光源 {i}: AABB Min={aabb.min}, Max={aabb.max}");
-            Debug.Log($" 光源 {i}: 体素范围: Min={minVoxel}, Max={maxVoxel}");
+            PointLightData lightData = pointLightDataArray[i];
+            Debug.Log($" 光源 {i}: 位置={lightData.position}, 范围={lightData.range}, 体素范围: Min={minVoxel}, Max={maxVoxel}");
         }
         //Debug.Log($"==========================================");
     }
@@ -605,22 +645,19 @@ public class VolumetricFogRenderPass : KuRenderPass
         // 设置局部体积雾参数
         SetLocalFogParameters(cmd);
         
-        // 设置点光源AABB参数（使用RenderingData版本，更高效）
-        SetPointLightAABBParameters(cmd, renderingData);
+        // 设置点光源参数（一次性收集、计算、提交完整数据）
+        SetPointLightParameters(cmd, renderingData, worldToVolume, logarithmicDepthEncodingParams);
 
-        DebugPrintLightVoxelRanges(worldToVolume,logarithmicDepthEncodingParams);
+        //DebugPrintLightVoxelRanges(worldToVolume,logarithmicDepthEncodingParams);
     }
     
     /// <summary>
-    /// 将点光源AABB参数传递给ComputeShader（推荐：使用RenderingData版本）
+    /// 将点光源参数传递给ComputeShader（推荐：使用RenderingData版本）
     /// </summary>
-    private void SetPointLightAABBParameters(CommandBuffer cmd, RenderingData renderingData)
+    private void SetPointLightParameters(CommandBuffer cmd, RenderingData renderingData, Matrix4x4 worldToVolume, Vector4 encodingParams)
     {
         // 使用 RenderingData 中的光源数据（推荐方式）
         CollectPointLightsFromRenderingData(renderingData);
-        
-        // 更新点光源AABB
-        UpdatePointLightAABBs();
         
         int lightCount = visibleLightList.Count;
         
@@ -631,16 +668,28 @@ public class VolumetricFogRenderPass : KuRenderPass
             return;
         }
         
+        // 更新基础数据（位置和范围）
+        UpdatePointLightData();
+        
+        // 计算体素范围数据
+        UpdatePointLightVoxelData(worldToVolume, encodingParams);
+        
+        // ✨ 所有数据准备完毕后，一次性提交到GPU
+        if (pointLightDataBuffer != null)
+        {
+            pointLightDataBuffer.SetData(pointLightDataArray, 0, 0, lightCount);
+        }
+        
         // 传递ComputeBuffer和数量到Shader
-        int kernelIndex = kucomputeShader.FindKernel("CSScatteringLight");
-        cmd.SetComputeBufferParam(kucomputeShader, kernelIndex, "_PointLightAABBs", pointLightAABBBuffer);
+        int kernelIndex = kucomputeShader.FindKernel("CSMain");
+        cmd.SetComputeBufferParam(kucomputeShader, kernelIndex, "_PointLightData", pointLightDataBuffer);
         cmd.SetComputeIntParam(kucomputeShader, "_PointLightCount", lightCount);
     }
     
     /// <summary>
-    /// 将点光源AABB参数传递给ComputeShader（备用：仅使用Light.GetLights）
+    /// 将点光源数据参数传递给ComputeShader（备用：仅使用Light.GetLights）
     /// </summary>
-    private void SetPointLightAABBParametersSimple(CommandBuffer cmd)
+    private void SetPointLightParametersSimple(CommandBuffer cmd, Matrix4x4 worldToVolume, Vector4 encodingParams)
     {
         // 重新收集点光源（支持运行时添加/删除）
         CollectPointLights();
@@ -654,53 +703,55 @@ public class VolumetricFogRenderPass : KuRenderPass
             return;
         }
         
-        // 初始化AABB数组（如果还没有或大小不匹配）
-        if (pointLightAABBArray == null || pointLightAABBArray.Length != lightCount)
+        // 初始化数据数组（如果还没有或大小不匹配）
+        if (pointLightDataArray == null || pointLightDataArray.Length != lightCount)
         {
-            pointLightAABBArray = new PointLightAABB[lightCount];
+            pointLightDataArray = new PointLightData[lightCount];
         }
         
-        // 填充数组数据
+        // 填充基础数据
         for (int i = 0; i < lightCount; i++)
         {
             Light light = pointLightList[i];
             Vector3 lightPos = light.transform.position;
             float lightRange = light.range;
             
-            // 计算AABB包围盒（以光源位置为中心）
-            Vector3 extents = Vector3.one * lightRange;
-            
-            pointLightAABBArray[i] = new PointLightAABB
+            pointLightDataArray[i] = new PointLightData
             {
-                min = lightPos - extents,
-                max = lightPos + extents,
-                padding1 = 0,
-                padding2 = 0
+                position = lightPos,
+                range = lightRange,
+                minVoxel = Vector3Int.zero,
+                maxVoxel = Vector3Int.zero,
+                paddingA = 0,
+                paddingB = 0
             };
         }
         
         // 重新创建ComputeBuffer（如果大小改变）
-        if (pointLightAABBBuffer == null || pointLightAABBBuffer.count != lightCount)
+        if (pointLightDataBuffer == null || pointLightDataBuffer.count != lightCount)
         {
-            pointLightAABBBuffer?.Release();
-            pointLightAABBBuffer = new ComputeBuffer(lightCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightAABB)));
+            pointLightDataBuffer?.Release();
+            pointLightDataBuffer = new ComputeBuffer(lightCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightData)));
         }
         
-        // 设置ComputeBuffer数据
-        pointLightAABBBuffer.SetData(pointLightAABBArray, 0, 0, lightCount);
+        // 计算体素范围数据
+        UpdatePointLightVoxelData(worldToVolume, encodingParams);
+        
+        // ✨ 一次性提交完整数据到GPU
+        pointLightDataBuffer.SetData(pointLightDataArray, 0, 0, lightCount);
         
         // 传递ComputeBuffer和数量到Shader
         int kernelIndex = kucomputeShader.FindKernel("CSScatteringLight");
-        cmd.SetComputeBufferParam(kucomputeShader, kernelIndex, "_PointLightAABBs", pointLightAABBBuffer);
+        cmd.SetComputeBufferParam(kucomputeShader, kernelIndex, "_PointLightData", pointLightDataBuffer);
         cmd.SetComputeIntParam(kucomputeShader, "_PointLightCount", lightCount);
     }
     
     /// <summary>
-    /// 获取点光源AABB数据（用于调试或其他用途）
+    /// 获取点光源数据（用于调试或其他用途）
     /// </summary>
-    public PointLightAABB[] GetPointLightAABBs()
+    public PointLightData[] GetPointLightData()
     {
-        return pointLightAABBArray;
+        return pointLightDataArray;
     }
     
     /// <summary>
@@ -712,20 +763,17 @@ public class VolumetricFogRenderPass : KuRenderPass
     }
     
     /// <summary>
-    /// 将点光源AABB数据打印到日志（调试用）
+    /// 将点光源数据打印到日志（调试用）
     /// </summary>
     public void DebugPrintPointLights()
     {
-        Debug.Log($"========== 点光源AABB调试信息 ==========");
+        Debug.Log($"========== 点光源数据调试信息 ==========");
         Debug.Log($"总光源数量: {visibleLightList.Count}");
         
         for (int i = 0; i < visibleLightList.Count; i++)
         {
-            VisibleLight visibleLight = visibleLightList[i];
-            PointLightAABB aabb = pointLightAABBArray[i];
-            Vector3 lightPos = visibleLight.light.transform.position;
-            Debug.Log($"光源 {i}: 位置={lightPos}, 范围={visibleLight.range}");
-            Debug.Log($"  AABB Min: {aabb.min}, Max: {aabb.max}");
+            PointLightData lightData = pointLightDataArray[i];
+            Debug.Log($"光源 {i}: 位置={lightData.position}, 范围={lightData.range}");
         }
         Debug.Log($"==========================================");
     }
@@ -795,6 +843,7 @@ public class VolumetricFogRenderPass : KuRenderPass
         if (stencilHandle != null) { stencilHandle.Release(); }
         if (downSampleHandle != null) { downSampleHandle.Release(); }
         if (volumeTexture != null) { volumeTexture.Release(); }
+        if (lightGridsTexture != null) { lightGridsTexture.Release(); }
         if (downsampledDepthTexture != null) { downsampledDepthTexture.Release(); }
         
         // 释放局部体积雾ComputeBuffer

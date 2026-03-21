@@ -41,7 +41,7 @@ MonoBehaviour:
     m_Value: 62
   _PhaseG:
     m_OverrideState: 1
-    m_Value: 0.467
+    m_Value: 0.498
   _Extinction:
     m_OverrideState: 1
     m_Value: 0.392
@@ -111,7 +111,7 @@ MonoBehaviour:
     m_Value: 0
   _JitterWeight:
     m_OverrideState: 1
-    m_Value: 1
+    m_Value: 0
   _GlobalScatter:
     m_OverrideState: 1
     m_Value: {x: 1, y: 1, z: 1}
@@ -126,4 +126,4 @@ MonoBehaviour:
     m_Value: 0.132
   _ReprojectWeight:
     m_OverrideState: 1
-    m_Value: 0.965
+    m_Value: 0.95

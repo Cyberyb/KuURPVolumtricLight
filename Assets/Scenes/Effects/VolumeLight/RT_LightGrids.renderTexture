@@ -15,7 +15,7 @@ RenderTexture:
   m_IsAlphaChannelOptional: 0
   serializedVersion: 5
   m_Width: 240
-  m_Height: 136
+  m_Height: 135
   m_AntiAliasing: 1
   m_MipCount: -1
   m_DepthStencilFormat: 0
@@ -25,7 +25,7 @@ RenderTexture:
   m_SRGB: 0
   m_UseDynamicScale: 0
   m_BindMS: 0
-  m_EnableCompatibleFormat: 0
+  m_EnableCompatibleFormat: 1
   m_EnableRandomWrite: 1
   m_TextureSettings:
     serializedVersion: 2
