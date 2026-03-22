@@ -42,6 +42,13 @@ public struct PointLightData
 public class VolumetricFogRenderPass : KuRenderPass
 {
     ProfilingSampler m_ProfilingSampler = new ProfilingSampler("Kutory Volumetric Fog");
+    
+    // 计算着色器Pass的性能分析采样器
+    private ProfilingSampler m_CSMainSampler = new ProfilingSampler("CS: Volumetric Fog Main");
+    private ProfilingSampler m_CSDownsampleSampler = new ProfilingSampler("CS: Downsample Depth");
+    private ProfilingSampler m_CSScatteringSampler = new ProfilingSampler("CS: Scattering Light");
+    private ProfilingSampler m_CSIntegrationSampler = new ProfilingSampler("CS: Integration");
+    
     private RenderTextureDescriptor textureDescriptor;
     public RTHandle textureHandle;
 
@@ -294,14 +301,22 @@ public class VolumetricFogRenderPass : KuRenderPass
 
         kucomputeShader.SetTexture(kernelIndex, "_OutputAttribute", volumeTexture);
         kucomputeShader.SetTexture(kernelIndex,"_LightGridsTexture", lightGridsTexture);
-        kucomputeShader.Dispatch(kernelIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
+        
+        using (new ProfilingScope(cmd, m_CSMainSampler))
+        {
+            kucomputeShader.Dispatch(kernelIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
+        }
 
         //CS1.5：相机深度下采样（可选，视性能需求而定）
         // 在 RenderVoxelFog 中，CSMain 和 CSScatteringLight 之间添加
         int downsampleIndex = kucomputeShader.FindKernel("CSDownsampleDepth");
         //kucomputeShader.SetTexture(downsampleIndex, "_CameraDepthTexture", renderingData.cameraData.renderer.cameraDepthTargetHandle);
         kucomputeShader.SetTexture(downsampleIndex, "_DownsampledDepth", downsampledDepthTexture); // 需要创建这个纹理
-        kucomputeShader.Dispatch(downsampleIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, 1);
+        
+        using (new ProfilingScope(cmd, m_CSDownsampleSampler))
+        {
+            kucomputeShader.Dispatch(downsampleIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, 1);
+        }
 
         //CS2: 计算散射
         int scatteringIndex = kucomputeShader.FindKernel("CSScatteringLight");
@@ -319,8 +334,10 @@ public class VolumetricFogRenderPass : KuRenderPass
         kucomputeShader.SetTexture(scatteringIndex, "_DebugTexture", debugTexture);
         kucomputeShader.SetTexture(scatteringIndex, "_DebugTexture2", debugTexture2);
         
-
-        kucomputeShader.Dispatch(scatteringIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth  / 8);
+        using (new ProfilingScope(cmd, m_CSScatteringSampler))
+        {
+            kucomputeShader.Dispatch(scatteringIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth  / 8);
+        }
 
         cmd.CopyTexture(scatteringTexture, prevScatteringTexture);
 
@@ -329,7 +346,10 @@ public class VolumetricFogRenderPass : KuRenderPass
         kucomputeShader.SetTexture(integrationIndex, "_InputScatteringLight", scatteringTexture);
         kucomputeShader.SetTexture(integrationIndex, "_OutputIntegrated", integratedTexture);
 
-        kucomputeShader.Dispatch(integrationIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
+        using (new ProfilingScope(cmd, m_CSIntegrationSampler))
+        {
+            kucomputeShader.Dispatch(integrationIndex, (voxelTextureSizeX + 7) / 8, (voxelTextureSizeY + 7) / 8, voxelTextureDepth / 8);
+        }
         /*Vertex&Pixel Shader部分*/
         Blit(cmd, cameraTargetHandle, sourceHandle);
         

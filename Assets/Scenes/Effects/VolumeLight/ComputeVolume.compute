@@ -18,6 +18,7 @@
 
 #pragma multi_compile_local _ USE_TEMPORAL_REPROJECTION
 //#define USE_TEMPORAL_REPROJECTION
+//#pragma enable_d3d11_debug_symbols
 
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -295,7 +296,7 @@ float VFLDistanceAttenuation(float distanceSqr, half2 distanceAttenuation)
 }
 
 //计算直接光的散射
-float3 EvaluateLight_Directional(float3 worldPos, float extinction)
+float3 EvaluateLight_Directional(float3 worldPos)
 {
     float3 startPos = _WorldSpaceCameraPos.xyz;
     float3 rayDir = normalize(worldPos - startPos);
@@ -462,29 +463,38 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     //计算当前散射和消光
     float4 scatterAndextinction = _InputAttribute[id];
-    float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition, scatterAndextinction.w);
+    float3 dirLightScattering = EvaluateLight_Directional(jitterWorldPosition);
     float3 addLightScattering = EvaluateLight_Addition(jitterWorldPosition).xyz;
-    int isInLight = _LightGridsTexture[id].x;
-
-    int sampleCount = min(floor(clipPos.z * 5),4);
-    sampleCount *= isInLight;
-    //sampleCount = 3;
+    int isInPointLight = _LightGridsTexture[id].x;
+    int isInDirLight = _LightGridsTexture[id].y;
+    int baseSampleCount = min(floor(clipPos.z * 16),15);
+    int addLightSampleCount = baseSampleCount * isInPointLight;
+    int dirLightSampleCount = baseSampleCount * isInDirLight;
+    //addLightSampleCount = 16;
     //uint sampleCount = 4;
     //if(isInLight == 1)
-    //{
-        for(int i = 0; i < sampleCount - 1; i++)
+    {
+        for(int i = 0; i < addLightSampleCount - 1; i++)
         {
-            float3 gridBias = float3(0.5f,0.5f, 1.0f/ sampleCount * (i + 1)) ;
+            float3 gridBias = float3(0.5f,0.5f, 1.0f/ addLightSampleCount * (i + 1)) ;
             float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
             addLightScattering += EvaluateLight_Addition(jitterLightPosition).xyz;
         }
-        addLightScattering /= max(sampleCount,1);
-    //}
+        addLightScattering /= max(addLightSampleCount,1);
+
+        // for(int j = 0; j < dirLightSampleCount - 1; j++)
+        // {
+        //     float3 gridBias = float3(0.5f,0.5f, 1.0f/ dirLightSampleCount * (j + 1)) ;
+        //     float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
+        //     dirLightScattering += EvaluateLight_Directional(jitterLightPosition);
+        // }
+        // dirLightScattering /= max(dirLightSampleCount,1);
+    }
 
     
      
     float3 scatter = scatterAndextinction.xyz * (dirLightScattering + addLightScattering);
-    float luminance = VolumeLuminance(scatter);
+    float luminance = min(VolumeLuminance(scatter), 1.0f);
     float4 finalScatterAndExtinction = float4(scatter, scatterAndextinction.a);
 
     //重投影
@@ -503,11 +513,11 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     {
         historyScatteringAndExtinction = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV, 0);
         weight *= step(0.01f, historyScatteringAndExtinction.w); //如果历史消光值过小，说明历史数据不可靠，权重设为0
-        historyScatteringAndExtinction_Jitter = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV_Jitter, 0);
+        //historyScatteringAndExtinction_Jitter = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV_Jitter, 0);
         float3 scatteringDifference = abs(historyScatteringAndExtinction.xyz - scatter);
         float threshold = max(0.05, VolumeLuminance(scatter) + 1.0f);
         clampedHistoryScatter = clamp(historyScatteringAndExtinction.xyz, scatter - threshold, scatter + threshold);
-        historyLuminance = VolumeLuminance(clampedHistoryScatter);
+        historyLuminance = min(VolumeLuminance(clampedHistoryScatter), 1.0f);
         //historyScattering = _PrevScatteringLight.SampleLevel(sampler_linear_clamp, historyUV, 0);
     }else{
         weight = 0;
@@ -522,12 +532,15 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     //重投影混合
     //historyScatteringAndExtinction = float4(clampedHistoryScatter, historyScatteringAndExtinction.w);
-    float luminanceDifference = clamp(abs(luminance - historyLuminance), 0.0, 1.0);
-    float adaptiveReprojectWeight = clamp(1.0 -  GetAdaptiveReprojectWeight(luminanceDifference), 0.0, 1.0) * weight; //根据亮度差异调整权重，差异越大权重越小
+    float luminanceDifference = clamp(abs(luminance - historyLuminance)* 4, 0.0, 1.0);
+    //直接光亮度差异不大，使用高权重
+    float adaptiveReprojectWeight = clamp(1.0 - 0.5 * GetAdaptiveReprojectWeight(luminanceDifference), 0.5, 1.0) * weight; //根据亮度差异调整权重，差异越大权重越小
+    adaptiveReprojectWeight = isInPointLight? adaptiveReprojectWeight : weight; 
     finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, adaptiveReprojectWeight);
-    _DebugTexture[id] = float4(0, 0, 0, 1);
+    //_DebugTexture[id] = float4(float(baseSampleCount)/ 4.0f, adaptiveReprojectWeight, abs(luminance - historyLuminance), 1);
     _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
+
 
 
 //积分
