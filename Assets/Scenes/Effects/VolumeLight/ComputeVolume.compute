@@ -112,7 +112,7 @@ uint _LocalFogCount;
 
 //点光源参数
 StructuredBuffer<PointLightData> _PointLightData;
-int _PointLightCount;
+uint _PointLightCount;
 
 float VolumeLuminance( float3 LinearColor )
 {
@@ -317,7 +317,7 @@ float3 EvaluateLight_Addition(float3 worldPos)
 {
     float3 startPos = _WorldSpaceCameraPos.xyz;
     float3 rayDir = normalize(worldPos - startPos);
-    int numAddtinalLights = 3;
+    int numAddtinalLights = _PointLightCount;
     float3 lightRadiance = 0;
     half testValue = 0;
     for (int lightIndex = 0; lightIndex < numAddtinalLights; ++lightIndex)

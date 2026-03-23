@@ -468,13 +468,6 @@ public class VolumetricFogRenderPass : KuRenderPass
             };
         }
         
-        // 重新创建ComputeBuffer（仅在大小改变时）
-        if (pointLightDataBuffer == null || pointLightDataBuffer.count != lightCount)
-        {
-            pointLightDataBuffer?.Release();
-            pointLightDataBuffer = new ComputeBuffer(lightCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightData)));
-        }
-        
         // ✨ 注意：不在这里调用 SetData()，等待体素范围数据更新完成后再统一提交
     }
     
@@ -680,24 +673,29 @@ public class VolumetricFogRenderPass : KuRenderPass
         CollectPointLightsFromRenderingData(renderingData);
         
         int lightCount = visibleLightList.Count;
-        
-        // 如果点光源的数量为0，则不需要设置
-        if (lightCount == 0)
+
+        // 重新创建ComputeBuffer（仅在大小改变时）
+        if (pointLightDataBuffer == null || pointLightDataBuffer.count != lightCount)
         {
-            cmd.SetComputeIntParam(kucomputeShader, "_PointLightCount", 0);
-            return;
+            pointLightDataBuffer?.Release();
+            int bufferSize = Mathf.Max(1, lightCount); // 确保至少有一个元素，避免Create时出错
+            pointLightDataBuffer = new ComputeBuffer(bufferSize, System.Runtime.InteropServices.Marshal.SizeOf(typeof(PointLightData)));
         }
         
-        // 更新基础数据（位置和范围）
-        UpdatePointLightData();
-        
-        // 计算体素范围数据
-        UpdatePointLightVoxelData(worldToVolume, encodingParams);
-        
-        // ✨ 所有数据准备完毕后，一次性提交到GPU
-        if (pointLightDataBuffer != null)
+        // 如果点光源的数量为0，则不需要设置
+        if (lightCount > 0)
         {
-            pointLightDataBuffer.SetData(pointLightDataArray, 0, 0, lightCount);
+            // 更新基础数据（位置和范围）
+            UpdatePointLightData();
+            
+            // 计算体素范围数据
+            UpdatePointLightVoxelData(worldToVolume, encodingParams);
+            
+            // ✨ 所有数据准备完毕后，一次性提交到GPU
+            if (pointLightDataBuffer != null)
+            {
+                pointLightDataBuffer.SetData(pointLightDataArray, 0, 0, lightCount);
+            }
         }
         
         // 传递ComputeBuffer和数量到Shader
@@ -807,48 +805,48 @@ public class VolumetricFogRenderPass : KuRenderPass
         CollectLocalFogs();
         
         int fogCount = localFogList.Count;
-        
-        // 如果雾的数量为0，则不需要设置
-        if (fogCount == 0)
-        {
-            cmd.SetComputeIntParam(kucomputeShader, "_LocalFogCount", 0);
-            return;
-        }
-        
-        // 初始化数组（如果还没有或大小不匹配）
-        if (localFogDataArray == null || localFogDataArray.Length != fogCount)
-        {
-            localFogDataArray = new LocalFogData[fogCount];
-        }
-        
-        // 填充数组数据
-        for (int i = 0; i < fogCount; i++)
-        {
-            LocalFog fog = localFogList[i].GetLocalFog();
-            if (fog == null)
-                continue;
-            
-            localFogDataArray[i] = new LocalFogData
-            {
-                center = fog.center,
-                density = fog.density,
-                extent = fog.extent,
-                extinction = fog.extinction,
-                albedo = fog.albedo,
-                padding = 0,
-                worldToLocalMatrix = fog.worldToLocalMatrix
-            };
-        }
-        
+
         // 重新创建ComputeBuffer（如果大小改变）
         if (localFogBuffer == null || localFogBuffer.count != fogCount)
         {
             localFogBuffer?.Release();
-            localFogBuffer = new ComputeBuffer(fogCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(LocalFogData)));
+            int bufferSize = Mathf.Max(1, fogCount);
+            localFogBuffer = new ComputeBuffer(bufferSize, System.Runtime.InteropServices.Marshal.SizeOf(typeof(LocalFogData)));
         }
         
-        // 设置ComputeBuffer数据
-        localFogBuffer.SetData(localFogDataArray, 0, 0, fogCount);
+        // 如果雾的数量为0，则不需要设置
+        if (fogCount > 0)
+        {
+            // 初始化数组（如果还没有或大小不匹配）
+            if (localFogDataArray == null || localFogDataArray.Length != fogCount)
+            {
+                localFogDataArray = new LocalFogData[fogCount];
+            }
+            
+            // 填充数组数据
+            for (int i = 0; i < fogCount; i++)
+            {
+                LocalFog fog = localFogList[i].GetLocalFog();
+                if (fog == null)
+                    continue;
+                
+                localFogDataArray[i] = new LocalFogData
+                {
+                    center = fog.center,
+                    density = fog.density,
+                    extent = fog.extent,
+                    extinction = fog.extinction,
+                    albedo = fog.albedo,
+                    padding = 0,
+                    worldToLocalMatrix = fog.worldToLocalMatrix
+                };
+            }
+            
+            // 设置ComputeBuffer数据
+            localFogBuffer.SetData(localFogDataArray, 0, 0, fogCount);
+        }
+        
+
         
         // 传递ComputeBuffer和数量到Shader
         cmd.SetComputeBufferParam(kucomputeShader, kucomputeShader.FindKernel("CSMain"), "_LocalFogData", localFogBuffer);
