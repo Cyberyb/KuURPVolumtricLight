@@ -3,6 +3,13 @@ Shader "Custom/FogShadow"
     Properties
     {
         _TempDepth("BorderDepth", Float) = 10.0
+        _ShadowSampleRadius("Shadow Sample Radius", Float) = 1.0
+        _BlockerSearchWidth("Border Search Width", Float) = 1.0
+        _BlueNoise("Blue Noise Texture", 2D) = "white" {}
+        _Bias("Shadow Bias", Float) = 0.005
+        _wLight("Light Size", Float) = 0.5
+        _ShadowStrength("Shadow Strength", Range(0,1)) = 1.0
+        _BaseColor("Base Color", Color) = (1,1,1,1)
     }
     SubShader
     {
@@ -18,12 +25,270 @@ Shader "Custom/FogShadow"
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
             #pragma multi_compile _ _SHADOWS_SOFT
+            #define NUM_SAMPLES 64
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
 
             float4x4 _LightVP;
+            float _ShadowSampleRadius;
+            float _BlockerSearchWidth;
+            float _Bias;
+            float _wLight;
+            float _ShadowStrength;
+            Texture2D _BlueNoise;
+            SamplerState sampler_BlueNoise;
+
+            float2 disk[NUM_SAMPLES];
+
+            //hash 二维随机
+            float hash12(float2 p)
+            {
+                float3 p3=frac(float3(p.xyx)*0.1031);
+                p3+=dot(p3,p3.yzx+33.33);
+                return frac((p3.x+p3.y)*p3.z);
+            }
+            // 泊松圆盘分布
+            void poissonDiskSamples(float2 randomSeed)
+            {
+                // 初始弧度
+                float angle = hash12(randomSeed) * 3.1415*3.1415;
+                // 初始半径
+                float INV_NUM_SAMPLES = 1.0 / float( NUM_SAMPLES );
+                float radius = INV_NUM_SAMPLES;
+                // 一步的弧度
+                float ANGLE_STEP = 3.883222077450933;
+                // 一步的半径
+                float radiusStep = radius;
+                
+                for( int i = 0; i < NUM_SAMPLES; i ++ ) 
+                {
+                    disk[i] = float2(cos(angle),sin(angle)) * pow( radius, 0.75 );
+                    radius += radiusStep;
+                    angle += ANGLE_STEP;
+                }
+            }
+
+            static float2 poissonDisk[16] = {
+                float2( -0.94201624, -0.39906216 ),
+                float2( 0.94558609, -0.76890725 ),
+                float2( -0.094184101, -0.92938870 ),
+                float2( 0.34495938, 0.29387760 ),
+                float2( -0.91588581, 0.45771432 ),
+                float2( -0.81544232, -0.87912464 ),
+                float2( -0.38277543, 0.27676845 ),
+                float2( 0.97484398, 0.75648379 ),
+                float2( 0.44323325, -0.97511554 ),
+                float2( 0.53742981, -0.47373420 ),
+                float2( -0.26496911, -0.41893023 ),
+                float2( 0.79197514, 0.19090188 ),
+                float2( -0.24188840, 0.99706507 ),
+                float2( -0.81409955, 0.91437590 ),
+                float2( 0.19984126, 0.78641367 ),
+                float2( 0.14383161, -0.14100790 )
+            };
+
+            static float2 Poisson64[64] = {
+                float2(-0.8750, -0.0313),
+                float2(-0.6250, -0.3750),
+                float2(-0.3125, -0.6875),
+                float2(0.0625, -0.8125),
+                float2(0.4375, -0.7500),
+                float2(0.7500, -0.5625),
+                float2(0.9375, -0.2500),
+                float2(0.8750, 0.1875),
+                float2(0.5625, 0.5000),
+                float2(0.1875, 0.7500),
+                float2(-0.1875, 0.8125),
+                float2(-0.5625, 0.6875),
+                float2(-0.8125, 0.3750),
+                float2(-0.9375, -0.2500),
+                float2(-0.5000, -0.7500),
+                float2(0.1250, -0.4375),
+                float2(0.3750, -0.1875),
+                float2(-0.1250, -0.1250),
+                float2(-0.3750, 0.1875),
+                float2(0.0000, 0.3125),
+                float2(0.6250, 0.0625),
+                float2(-0.6875, -0.6250),
+                float2(-0.8125, 0.0000),
+                float2(0.2500, -0.6250),
+                float2(0.5000, -0.4375),
+                float2(0.7500, -0.1875),
+                float2(0.3125, 0.1250),
+                float2(-0.2500, -0.4375),
+                float2(-0.5000, 0.5000),
+                float2(-0.1250, 0.6250),
+                float2(0.3750, 0.6875),
+                float2(0.6875, 0.3750),
+                float2(-0.7500, 0.6250),
+                float2(-0.9375, 0.1250),
+                float2(0.8125, -0.3750),
+                float2(0.9375, 0.3750),
+                float2(0.0625, 0.0000),
+                float2(-0.4375, -0.1875),
+                float2(0.1875, -0.8750),
+                float2(-0.0625, -0.6875),
+                float2(0.5625, -0.7500),
+                float2(-0.6250, 0.1250),
+                float2(-0.3125, 0.3750),
+                float2(0.2500, 0.3750),
+                float2(0.8125, 0.6250),
+                float2(-0.8750, -0.4375),
+                float2(-0.5625, -0.8125),
+                float2(0.4375, 0.0000),
+                float2(-0.1875, -0.8125),
+                float2(0.0000, 0.8750),
+                float2(-0.3750, -0.7500),
+                float2(0.6250, -0.6250),
+                float2(0.1250, 0.1875),
+                float2(-0.2500, 0.1250),
+                float2(0.3125, -0.3125),
+                float2(-0.6875, 0.3125),
+                float2(0.7500, 0.1250),
+                float2(-0.0625, 0.3125),
+                float2(0.5000, 0.2500),
+                float2(-0.4375, 0.7500),
+                float2(0.1875, 0.5000),
+                float2(-0.8125, -0.6250),
+                float2(0.9375, -0.0625),
+                float2(-0.2200, -0.2200)
+            };
+
+            float Random1DTo1D(float value,float a,float b){
+                //make value more random by making it bigger
+                float random = frac(sin(value+b)*a);
+                    return random;
+            }
+
+            float RandomBlueNoise(float2 uv)
+            {
+                return SAMPLE_TEXTURE2D(_BlueNoise, sampler_BlueNoise, uv).r;
+            }
+
+            float2 RotateVec2(float2 v, float angle)
+            {
+                float s = sin(angle);
+                float c = cos(angle);
+
+                return float2(v.x*c+v.y*s, -v.x*s+v.y*c);
+            }
+
+            //计算平均遮挡深度
+            float2 SampleBlockerAvgDepth(float mdepth,float4 shadowCoord, ShadowSamplingData shadowSamplingData, float random)
+            {
+                float blockDepth = 0;
+                int count = 0.0001;
+
+                for(int i = 0; i < NUM_SAMPLES; i++)
+                {
+                    float2 offset = Poisson64[i];
+                    offset = offset * shadowSamplingData.shadowmapSize.xy * _BlockerSearchWidth;
+                    float2 sampleUV = shadowCoord.xy + offset;
+                    float sampleDepth = SAMPLE_TEXTURE2D(_MainLightShadowmapTexture, 
+                                                          sampler_LinearClamp, 
+                                                          sampleUV);
+                    if(sampleDepth - mdepth > _Bias)
+                    {   
+                        blockDepth += sampleDepth;
+                        count += 1.0;
+                    }
+                }
+                // int SAMPLE_RADIUS = 3; // 7x7采样区域半径
+                // for(int j = -SAMPLE_RADIUS; j <= SAMPLE_RADIUS; j++)
+                // {
+                //     for(int k = -SAMPLE_RADIUS; k <= SAMPLE_RADIUS; k++)
+                //     {
+                //         float2 offset = float2(j, k) * shadowSamplingData.shadowmapSize.xy * _BlockerSearchWidth;
+                //         float2 sampleUV = shadowCoord.xy + offset;
+                //         float sampleDepth = SAMPLE_TEXTURE2D(_MainLightShadowmapTexture, 
+                //                                               sampler_LinearClamp, 
+                //                                               sampleUV);
+                //         if(sampleDepth - mdepth > 0)
+                //         {   
+                //             blockDepth += sampleDepth;
+                //             count += 1.0;
+                //         }
+                //     }
+                // }
+                return float2(blockDepth/count , count);
+            }
+
+            // 泊松圆盘PCF采样函数
+            half PoissonPCF(float4 shadowCoord, half4 shadowParams, ShadowSamplingData shadowSamplingData, float sampleRadius, float random, float depthDifference)
+            {
+                half shadow = 0.0;
+                half shadowStrength = shadowParams.x;
+                int SAMPLE_RADIUS = 3; // 7x7采样区域半径
+                
+                // 泊松圆盘采样
+                for(int i = 0; i < NUM_SAMPLES; i++)
+                {
+                    // 根据采样半径调整采样偏移
+                    float2 offset = Poisson64[i]; // 转换为UV偏移
+                    //RotateVec2(offset, random * 6.28318530718)
+                    offset = offset * shadowSamplingData.shadowmapSize.xy * sampleRadius * depthDifference; // 随机旋转采样点，避免重复图案
+                    float2 sampleUV = clamp(shadowCoord.xy + offset, 0.01, 0.99);
+                    float3 sampleUVZ = float3(sampleUV, shadowCoord.z);
+                    
+                    // 采样阴影图
+                    float attenuation = SAMPLE_TEXTURE2D_SHADOW(_MainLightShadowmapTexture, 
+                                                          sampler_LinearClampCompare, 
+                                                          sampleUVZ);
+                    
+                    // 深度比较：采样深度 > 当前深度 = 在阴影中
+                    // Reverse Z
+                    shadow += attenuation;
+                }
+                
+                // 平均采样结果
+                shadow /= float(NUM_SAMPLES);
+                shadow = 1 - shadow;
+
+                shadow = shadow; // 4次幂增强对比度，使阴影边缘更柔和
+
+                
+                // 应用阴影强度
+                shadow = lerp(1.0, shadow, shadowStrength);
+                
+                return shadow;
+            }
+
+            half VFPCF(float4 shadowCoord, half4 shadowParams, ShadowSamplingData shadowSamplingData, float sampleRadius, float random, float depthDifference)
+            {
+                half shadow = 0.0;
+                half shadowStrength = shadowParams.x;
+                
+                // 泊松圆盘采样
+                for(int i = 0; i < NUM_SAMPLES; i++)
+                {
+                    // 根据采样半径调整采样偏移
+                    float depthDiffOffset = depthDifference;
+                    float2 offset = Poisson64[i]; // 转换为UV偏移
+                    offset = offset * shadowSamplingData.shadowmapSize.xy * sampleRadius * depthDiffOffset; // 随机旋转采样点，避免重复图案
+                    float2 sampleUV = shadowCoord.xy + offset;
+                    float3 sampleUVZ = float3(sampleUV, shadowCoord.z);
+                    
+                    // 采样阴影图
+                    //float attenuation = SAMPLE_TEXTURE2D_SHADOW(_MainLightShadowmapTexture, sampler_LinearClampCompare, sampleUVZ);
+                    float attenuation = SAMPLE_TEXTURE2D_SHADOW(_MainLightShadowmapTexture, 
+                                                          sampler_LinearClampCompare, 
+                                                          sampleUVZ);
+
+                    shadow += attenuation * 3; 
+                    //被遮挡时attenuation = 0
+                }
+                
+                // 平均采样结果
+                shadow = min(shadow / float(NUM_SAMPLES), 1.0);
+                shadow = shadow;
+                
+                // 应用阴影强度
+                shadow = lerp(1.0, shadow, shadowStrength);
+                
+                return shadow;
+            }
 
             struct Attributes
             {
@@ -97,44 +362,63 @@ Shader "Custom/FogShadow"
                 float sampledDepth = SAMPLE_TEXTURE2D(_MainLightShadowmapTexture, 
                                                       sampler_PointClamp, 
                                                       shadowCoordinates.xy).r;
-                
                 // 计算原始深度差值（在0~1范围内）
                 float depthDifference = sampledDepth - currentDepth;
+                float worldDepthDiffVis = depthDifference * (cascadeFar - cascadeNear); // 放大差值以增强可见性 
 
-                float worldDepthDiffVis = depthDifference * (cascadeFar - cascadeNear); // 放大差值以增强可见性
+                /*===================以下为实际阴影渲染代码==================================*/
+                //获取随机数
+                float random = Random1DTo1D(IN.positionWS.x + IN.positionWS.y, 14375.5964, 0.546);
+                float blueNoiseRandom = RandomBlueNoise(IN.positionWS.xy);
+                poissonDiskSamples(shadowCoordinates.xy);
+
+                ShadowSamplingData shadowSamplingData = GetMainLightShadowSamplingData();
+                half4 shadowParams = GetMainLightShadowParams();
+                half shadowFade = GetMainLightShadowFade(IN.positionWS);
+
+                //求遮挡物平均深度
+                // float2 blockerData = SampleBlockerAvgDepth(currentDepth, shadowCoordinates, shadowSamplingData, random);
+
+                // float blockerAvgDepth = blockerData.x;
+                // float blockerCount = blockerData.y;
+
+                half shadowAtten = 1;
+                // float wPenumbra = (blockerAvgDepth - currentDepth)/blockerAvgDepth * _wLight;
+                //depthDifference = blockerAvgDepth - currentDepth;
+                if(depthDifference > 0)
+                {
+                    shadowAtten = VFPCF(shadowCoordinates, shadowParams, shadowSamplingData,_ShadowSampleRadius, random, depthDifference);
+                }
+
+                // 使用泊松圆盘PCF采样代替标准采样
+                //shadowAtten = PoissonPCF(shadowCoordinates, shadowParams, shadowSamplingData, _ShadowSampleRadius, blueNoiseRandom,wPenumbra);
+                
+                //half shadowAtten = MainLightRealtimeShadow(shadowCoordinates);
+                //half shadowAtten = SampleShadowmapVF(TEXTURE2D_SHADOW_ARGS(_MainLightShadowmapTexture, sampler_LinearClampCompare), shadowCoordinates, shadowSamplingData);
+                //half shadow = MixRealtimeAndBakedShadows(shadowAtten, half(1.0), shadowFade);
+                half shadow = shadowAtten;
+
+
+                
                 
                 // 获取主光源信息
                 //Light mainLight = GetMainLight(shadowCoordinates);
                 
                 // 从 _MainLightShadowParams 获取阴影参数
-                // x: 1.0 / (1.0 + shadowDistance)
-                // y: shadowDistance
-                // z: CB offset (for complex light setup)
-                // w: fade parameter
-                //float shadowFade = mainLight.shadowAttenuation;  // 包含cascade fade
+                // (x: shadowStrength, y: >= 1.0 if soft shadows, 0.0 otherwise, z: main light fade scale, w: main light fade bias)
                 
                 // 获取光源的近远平面参数
                 // _MainLightWorldToShadow[4] 的各个分量可以提供范围信息
                 // 对于标准URP，近远平面通常是：
 
-    
-
-                // 1. 原始深度差值
-                half3 result = half3(0,0,0);
-                // 2. 世界空间深度差值
-                result = half3(worldDepthDiffVis, worldDepthDiffVis, worldDepthDiffVis);
+                // 世界空间深度差值
+                shadow = 1.0 - shadow;
+                shadow *= _ShadowStrength;
+                shadow = 1.0 - shadow;
+                half3 result = half3(shadow, shadow, shadow);
                 
-                // 3. 采样深度
-                //result = half3(sampledDepth, sampledDepth, sampledDepth);
                 
-                // 4. 当前深度
-                //result = half3(currentDepth, currentDepth, currentDepth);
-                
-                // 5. 差值符号（红=当前更近，蓝=采样更近）
-                //result = depthDifference > 0 ? half3(1, 0, 0) : half3(0, 0, 1);
-                //result = half3(depthDifference, depthDifference, depthDifference);
-                
-                return half4(result / 10.0f, 1.0);
+                return half4(result, 1.0);
             }
             
             ENDHLSL

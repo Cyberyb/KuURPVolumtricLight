@@ -35,7 +35,7 @@ public class LightShadowCompute : MonoBehaviour
         // 步骤3：合并视图矩阵和投影矩阵（世界→光源裁剪空间）
         Matrix4x4 lightVP = lightProjMatrix * lightViewMatrix;
 
-        Debug.Log("Light VP Matrix:\n" + lightVP);
+        //Debug.Log("Light VP Matrix:\n" + lightVP);
         // 传递到着色器
         targetRenderer.material.SetMatrix("_LightVP", lightVP);
     }

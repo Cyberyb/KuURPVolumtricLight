@@ -1,5 +1,4 @@
 ﻿using UnityEditor;
-using UnityEditor.Overlays;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering.RenderGraphModule;
 using UnityEngine.Rendering;
@@ -90,7 +89,7 @@ public class KuRenderPass : ScriptableRenderPass
 
 
     //Unity在Render Pass 执行后销毁材质和临时Render texture
-    public void Dispose()
+    public virtual void Dispose()
     {
         //Object.Destroy(material);
         if (currentTarget != null) { currentTarget.Release(); }

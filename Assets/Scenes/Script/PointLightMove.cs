@@ -21,6 +21,6 @@ public class PointLightMove : MonoBehaviour
     {
         // 使用正弦波实现上下平滑移动
         float yOffset = Mathf.Sin(Time.time * moveSpeed) * moveDistance;
-        transform.position = initialPosition + Vector3.up * yOffset;
+        transform.position = initialPosition + Vector3.right * yOffset;
     }
 }

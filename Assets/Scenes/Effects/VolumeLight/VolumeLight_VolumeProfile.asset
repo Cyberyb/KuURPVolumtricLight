@@ -29,77 +29,56 @@ MonoBehaviour:
   active: 1
   _DownSample:
     m_OverrideState: 1
-    m_Value: 1
+    m_Value: 4
   _LightTint:
     m_OverrideState: 1
     m_Value: {r: 0.9176471, g: 0.67058825, b: 0.40784317, a: 1}
   _LightIntensity:
     m_OverrideState: 1
-    m_Value: 1
+    m_Value: 1.5
   _StepTimes:
     m_OverrideState: 1
-    m_Value: 62
+    m_Value: 512
   _PhaseG:
     m_OverrideState: 1
-    m_Value: 0.498
+    m_Value: 0.484
   _Extinction:
     m_OverrideState: 1
-    m_Value: 0.392
+    m_Value: 0.1
   _JitterTexture:
     m_OverrideState: 1
-    m_Value: {fileID: 2800000, guid: a4ccee2deb3b24644b782632440a4034, type: 3}
+    m_Value: {fileID: 2800000, guid: 14a3870413ba16048ab399069fe13526, type: 3}
     dimension: 1
   _BlurSize:
     m_OverrideState: 1
-    m_Value: 1.73
+    m_Value: 0
   _RangeSigma:
     m_OverrideState: 1
-    m_Value: 1.75
+    m_Value: 0.17
+  _GridPixelSize:
+    m_OverrideState: 1
+    m_Value: 8
+  _GridSizeZ:
+    m_OverrideState: 1
+    m_Value: 64
   _DepthFactor:
     m_OverrideState: 1
-    m_Value: 2
+    m_Value: 1.19
   _FarPlane:
     m_OverrideState: 1
     m_Value: 64
   _VolumeColor:
     m_OverrideState: 0
     m_Value: {x: 0.2, y: 0.6, z: 1, w: 1}
-  _VolumeTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: 28b7233e9ea88de4bb8bfc40555e4e24, type: 2}
-  _IntegratedTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: 6102882a1e23fb44f8fe8ebfe9e6c99d, type: 2}
-  _ScatteringTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: 5ea52cc5e738e584c9ab810d66f32fe2, type: 2}
-  _PrevScatteringTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: 3a33505ca94a5de449113bd0922644f7, type: 2}
-  _LowPrevScatteringTexture:
-    m_OverrideState: 0
-    m_Value: {fileID: 0}
-  _ScreenIntegratedTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: c84f3705925a7c74897f8fc33fd52c58, type: 2}
-  _LightGridsTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: 8a461ef28e74ec14dbc6f49f076f8c52, type: 2}
-  _DebugTexture:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: af2b5de6715bfad47b9fdcdfc6dcafdc, type: 2}
-  _DebugTexture2:
-    m_OverrideState: 1
-    m_Value: {fileID: 8400000, guid: fdcaa2dabe4a86344b816fce254888a5, type: 2}
   _UseFroxel:
     m_OverrideState: 1
     m_Value: 1
-  _UseScreenIntergrated:
-    m_OverrideState: 1
-    m_Value: 0
   _UseTemporalReproject:
     m_OverrideState: 1
     m_Value: 1
+  _UseAdaptiveTAA:
+    m_OverrideState: 1
+    m_Value: 0
   _GlobalFogDensity:
     m_OverrideState: 1
     m_Value: 2
@@ -120,10 +99,16 @@ MonoBehaviour:
     m_Value: 0.001
   _GlobalAlbedo:
     m_OverrideState: 1
-    m_Value: {r: 0.9169811, g: 0.6698196, b: 0.40658593, a: 1}
+    m_Value: {r: 0.91764706, g: 0.67058825, b: 0.40784314, a: 1}
+  _SunLightScatterIntensity:
+    m_OverrideState: 1
+    m_Value: 1.5
+  _AddLightScatterIntensity:
+    m_OverrideState: 1
+    m_Value: 1.5
   _GlobalExtinction:
     m_OverrideState: 1
-    m_Value: 0.132
+    m_Value: 0.1
   _ReprojectWeight:
     m_OverrideState: 1
-    m_Value: 0.947
+    m_Value: 0.851

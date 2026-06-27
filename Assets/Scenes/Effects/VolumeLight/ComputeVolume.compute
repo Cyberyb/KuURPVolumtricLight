@@ -17,6 +17,7 @@
 #define _ADDITIONAL_LIGHT_SHADOWS_CASCADE
 
 #pragma multi_compile_local _ USE_TEMPORAL_REPROJECTION
+#pragma multi_compile_local _ USE_ADAPTIVE_TAA
 //#define USE_TEMPORAL_REPROJECTION
 //#pragma enable_d3d11_debug_symbols
 
@@ -95,6 +96,8 @@ int _FrameNumberMod8;
 float _JitterWeight;
 float _ReprojectWeight;
 int _LocalVolumeNum;
+float _MinWeight;
+int _GridPixelSize;
 
 //雾相关参数
 float _HeightFallOff;
@@ -105,6 +108,8 @@ float _GlobalAbsorb;
 float _PhaseG;
 float3 _GlobalAlbedo;
 float _GlobalExtinction;
+float _SunLightScatterIntensity;
+float _AddLightScatterIntensity;
 
 //局部体积雾参数
 StructuredBuffer<LocalFogData> _LocalFogData;
@@ -269,6 +274,15 @@ float Phase(float3 inL, float3 outL)
     return a/b;
 }
 
+float HenyeyGreensteinPhase(float3 inL, float3 outL)
+{
+    float cosTheta = dot(normalize(-inL),normalize(outL));
+    float G = _PhaseG;
+    float Numer = 1.0f - G * G;
+    float Denom = max(0.001,1.0f + G * G - 2.0f * G * cosTheta);
+    return Numer / (4.0f * 3.1415 * Denom * sqrt(Denom));
+}
+
 //计算阴影项    
 float GetVolumeShadow(float3 position)
 {
@@ -309,7 +323,7 @@ float3 EvaluateLight_Directional(float3 worldPos)
     Light mainLight = GetMainLight(shadowPos);
     //float transToLight = exp(-ex)
 
-    return mainLight.color.rgb * PI * phase  * mainLight.shadowAttenuation;
+    return mainLight.color.rgb * phase  * mainLight.shadowAttenuation * _SunLightScatterIntensity;
     //return float3(1,0,0);
 }
 
@@ -317,7 +331,8 @@ float3 EvaluateLight_Addition(float3 worldPos)
 {
     float3 startPos = _WorldSpaceCameraPos.xyz;
     float3 rayDir = normalize(worldPos - startPos);
-    int numAddtinalLights = _PointLightCount;
+    //todo
+    int numAddtinalLights = 1;
     float3 lightRadiance = 0;
     half testValue = 0;
     for (int lightIndex = 0; lightIndex < numAddtinalLights; ++lightIndex)
@@ -347,11 +362,11 @@ float3 EvaluateLight_Addition(float3 worldPos)
 // #endif
         half shadowAttenuation = AdditionalLightRealtimeShadow(lightIndex, lightPositionWS.xyz, lightDirection);
         float  phase = Phase(-lightDirection ,rayDir);
-        float3 radiance = PI * color.rgb * attenuation * phase * shadowAttenuation;
+        float3 radiance = color.rgb * attenuation * phase * shadowAttenuation;
         lightRadiance += radiance;
     }
     //lightColor = float3(testValue.xxx);
-    return lightRadiance;
+    return lightRadiance * _AddLightScatterIntensity;
 }
 
 float GetAdaptiveReprojectWeight(float x)
@@ -433,6 +448,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 [numthreads(8,8,8)]
 void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 {
+    if (id.x >= _VolumeSize.x || id.y >= _VolumeSize.y || id.z >= _VolumeSize.z)
+        return;
+
     float3 gridBias = float3(0.5f,0.5f,0.5f);
     float3 worldPosition = FroxelToWorldPos(id, gridBias);
 
@@ -456,7 +474,7 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     clipPos /= clipPos.w;
     if(1 - deviceDepth < clipPos.z)
     {
-        _DebugTexture[id] = float4(0,0,0,0);
+        //_DebugTexture[id] = float4(0,0,0,0);
         _OutputScatteringLight[id] = float4(0,0,0,0);
         return;
     }
@@ -476,19 +494,19 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     {
         for(int i = 0; i < addLightSampleCount - 1; i++)
         {
-            float3 gridBias = float3(0.5f,0.5f, 1.0f/ addLightSampleCount * (i + 1)) ;
+            float3 gridBias = float3(jitterBias.xy * 1.5, 1.0f/ addLightSampleCount * (i + 1)) ;
             float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
             addLightScattering += EvaluateLight_Addition(jitterLightPosition).xyz;
         }
         addLightScattering /= max(addLightSampleCount,1);
 
-        // for(int j = 0; j < dirLightSampleCount - 1; j++)
-        // {
-        //     float3 gridBias = float3(0.5f,0.5f, 1.0f/ dirLightSampleCount * (j + 1)) ;
-        //     float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
-        //     dirLightScattering += EvaluateLight_Directional(jitterLightPosition);
-        // }
-        // dirLightScattering /= max(dirLightSampleCount,1);
+        for(int j = 0; j < addLightSampleCount - 1; j++)
+        {
+            float3 gridBias = float3(jitterBias.xy * 1.5, 1.0f/ addLightSampleCount * (j + 1)) ;
+            float3 jitterLightPosition = FroxelToWorldPos(id, gridBias);
+            dirLightScattering += EvaluateLight_Directional(jitterLightPosition).xyz;
+        }
+        dirLightScattering /= max(addLightSampleCount,1);
     }
 
     
@@ -508,11 +526,11 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
     float4 historyScatteringAndExtinction_Jitter = float4(0, 0, 0, 0);
     float historyLuminance = 0;
     float3 clampedHistoryScatter = float3(0, 0, 0);
-    bool isValidHistory = all(historyUV >= 0) && all(historyUV <= 1);
+    bool isValidHistory = all(historyUV >= 0) && all(historyUV <= 1) && (1 - deviceDepth > historyUV.z);
     if (isValidHistory)
     {
         historyScatteringAndExtinction = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV, 0);
-        weight *= step(0.01f, historyScatteringAndExtinction.w); //如果历史消光值过小，说明历史数据不可靠，权重设为0
+        //weight *= step(0.01f, historyScatteringAndExtinction.w); //如果历史消光值过小，说明历史数据不可靠，权重设为0
         //historyScatteringAndExtinction_Jitter = SAMPLE_TEXTURE3D_LOD(_PrevScatteringLight, sampler_Bilinear_clamp, historyUV_Jitter, 0);
         float3 scatteringDifference = abs(historyScatteringAndExtinction.xyz - scatter);
         float threshold = max(0.05, VolumeLuminance(scatter) + 1.0f);
@@ -532,12 +550,18 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 
     //重投影混合
     //historyScatteringAndExtinction = float4(clampedHistoryScatter, historyScatteringAndExtinction.w);
-    float luminanceDifference = clamp(abs(luminance - historyLuminance)* 4, 0.0, 1.0);
+    float luminanceDifference = clamp(abs(luminance - historyLuminance)* 40, 0.0, 1.0);
     //直接光亮度差异不大，使用高权重
-    float adaptiveReprojectWeight = clamp(1.0 - 0.5 * GetAdaptiveReprojectWeight(luminanceDifference), 0.5, 1.0) * weight; //根据亮度差异调整权重，差异越大权重越小
-    adaptiveReprojectWeight = isInPointLight? adaptiveReprojectWeight : weight; 
+    float adaptiveReprojectWeight = clamp(1.0 - (1.0 - 0.5) * GetAdaptiveReprojectWeight(luminanceDifference), 0.5, weight); //根据亮度差异调整权重，差异越大权重越小
+    #ifdef USE_ADAPTIVE_TAA
+        //adaptiveReprojectWeight = 0;
+        adaptiveReprojectWeight = isInPointLight? adaptiveReprojectWeight : weight;
+        //adaptiveReprojectWeight = isInPointLight? adaptiveReprojectWeight : weight;
+    #else
+        adaptiveReprojectWeight = weight;
+    #endif
     finalScatterAndExtinction = lerp(finalScatterAndExtinction, historyScatteringAndExtinction, adaptiveReprojectWeight);
-    //_DebugTexture[id] = float4(float(baseSampleCount)/ 4.0f, adaptiveReprojectWeight, abs(luminance - historyLuminance), 1);
+    //_DebugTexture[id] = float4(addLightSampleCount/16.0,addLightSampleCount/16.0,addLightSampleCount/16.0, 1);
     _OutputScatteringLight[id] = finalScatterAndExtinction;
 }
 
@@ -547,6 +571,9 @@ void CSScatteringLight(uint3 id : SV_DispatchThreadID)
 [numthreads(8,8,1)]
 void CSIntegration(uint3 id : SV_DispatchThreadID)
 {
+    if (id.x >= _VolumeSize.x || id.y >= _VolumeSize.y)
+        return;
+
     uint3 pos = uint3(id.xy,1);
     float density = 0;
     float3 preGirdBias = float3(0.5f,0.5f,-0.5f);
@@ -572,8 +599,11 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
         float transmittance = exp(-extinction * step_size);
 
         float3 scatteringIntegrated = (S-S * transmittance) / max(extinction,0.0001);
-        totalRadiance += scatteringIntegrated * totalTransmittance * step_size;
+        totalRadiance += scatteringIntegrated * totalTransmittance;
         totalTransmittance *= transmittance;
+
+        // float3 scatteringIntegrated = totalTransmittance * S * step_size;
+        // totalRadiance += scatteringIntegrated;
         
         _OutputIntegrated[pos] = float4(totalRadiance,totalTransmittance);
     }
@@ -584,6 +614,9 @@ void CSIntegration(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void CSDownsampleDepth(uint3 id : SV_DispatchThreadID)
 {
+    if (id.x >= _VolumeSize.x || id.y >= _VolumeSize.y)
+        return;
+
     float2 uv = (float2(id.xy) + 0.5)/ _VolumeSize.xy; // 采样原始纹理坐标
     
     // 在逆深度模式下，最远的物体深度值最小，所以取min获得最远深度
@@ -597,11 +630,14 @@ void CSDownsampleDepth(uint3 id : SV_DispatchThreadID)
     //         minDepth = min(minDepth, depth);
     //     }
     // }
+    float gridPixelSize = max(1.0, (float)_GridPixelSize);
+    float2 screenSize = _VolumeSize.xy * gridPixelSize;
     for(int x = 0; x < 2; x++)
     {
         for(int y = 0; y < 2; y++)
         {
-            float2 sampleUV = uv + float2(x * 8 - 4, y * 8 - 4) / _VolumeSize.xy;
+            float2 sampleOffset = float2(x * gridPixelSize - gridPixelSize * 0.5, y * gridPixelSize - gridPixelSize * 0.5);
+            float2 sampleUV = uv + sampleOffset / screenSize;
             float depth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, sampleUV, 0).r;
             minDepth = min(minDepth, depth);
         }

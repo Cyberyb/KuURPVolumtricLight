@@ -11,7 +11,12 @@
 	HLSLINCLUDE
 
         #define MAIN_LIGHT_CALCULATE_SHADOWS  //定义阴影采样
+        #define _MAIN_LIGHT_SHADOWS
         #define _MAIN_LIGHT_SHADOWS_CASCADE //启用级联阴影
+
+        #define _ADDITIONAL_LIGHT_SHADOWS
+        #define _ADDITIONAL_LIGHT_SHADOWS_CASCADE
+        #pragma enable_d3d11_debug_symbols
         
 		
 		#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -173,7 +178,7 @@
         float extinctionAt(float3 pos)
         {
             //消光系数，在均匀介质中为常数
-            return _Extinction;
+            return _Extinction * 2;
         }
 
         float Phase(float3 inL, float3 outL)
@@ -270,7 +275,37 @@
             return currInScatteringAndTransmittance;
         }
 
+        //计算直接光的散射
+        float3 EvaluateLight_Directional(float3 worldPos)
+        {
+            float3 lightDir = GetMainLight().direction;
+            float3 rayDir = normalize(worldPos - _WorldSpaceCameraPos.xyz );
+            float phase = Phase(-lightDir ,rayDir);
+            float4 shadowPos = TransformWorldToShadowCoord(worldPos);
+            Light mainLight = GetMainLight(shadowPos);
 
+            return mainLight.color.rgb * mainLight.shadowAttenuation * phase;
+            //return rayDir;
+        }
+
+        float3 EvaluateLight_Addition(float3 worldPos)
+        {
+            float3 startPos = _WorldSpaceCameraPos.xyz;
+            float3 rayDir = normalize(worldPos - startPos);
+            //todo
+            int numAddtinalLights = 1;
+            float3 lightRadiance = 0;
+            half testValue = 0;
+            for (int lightIndex = 0; lightIndex < numAddtinalLights; ++lightIndex)
+            {
+                //光源信息
+                Light addLight = GetAdditionalLight(lightIndex, worldPos);
+                float  phase = Phase(-addLight.direction ,rayDir);
+                float3 radiance = addLight.color.rgb * addLight.distanceAttenuation * phase * addLight.shadowAttenuation;
+                lightRadiance += radiance;
+            }
+            return lightRadiance;
+        }
 
         v2f vert(a2v v)
         {
@@ -364,9 +399,9 @@
             i.screen_uv.xy = i.screen_uv.xy / i.screen_uv.w;
 
             //采样mask，决定采样区域
-            float mask = SAMPLE_TEXTURE2D(_StencilTexture,sampler_StencilTexture,i.screen_uv.xy).r;
-            if(mask < 0.99f) 
-                return float4(0,0,0,0);
+            // float mask = SAMPLE_TEXTURE2D(_StencilTexture,sampler_StencilTexture,i.screen_uv.xy).r;
+            // if(mask < 0.99f) 
+            //     return float4(0,0,0,0);
 
 
             //深度重建世界坐标
@@ -380,7 +415,7 @@
 
             float stepSize = rayLength / _StepTimes;
 
-            float3 intensity = 0;
+            float3 totalRadiance = 0;
             float transmittance = 1;
             float randomBias = 0;
 
@@ -393,32 +428,34 @@
                 randomBias = GetRandomNum(i.screen_uv) * stepSize * 0.5;
             #endif
 
-            startPos += randomBias;
+            startPos.z += 0.001;
             float3 lightDir = GetMainLight().direction;
-            float phase = Phase(lightDir ,-rayDir);
+            float phase = Phase(-lightDir ,rayDir);
 
+
+            float totalTransmittance = 1.0;
             for(float distance = 0; distance < rayLength; distance += stepSize)
             {
                 float3 curPos = startPos + distance * rayDir;
                 //有一种插值求法lerp(startPos, startPos + rayDir * rayLength, i);
+                
+                float extinction = extinctionAt(curPos);
+                float3 scatter = _ColorTint.rgb * extinction;
+                
+                //float3 S = scatter * GetMainLight().color.rgb * GetLightAttenuation(curPos);
+                float3 S = scatter * (EvaluateLight_Directional(curPos) + EvaluateLight_Addition(curPos));
 
+                transmittance *= exp(-stepSize * extinction);
                 
-                transmittance *= exp(-stepSize * extinctionAt(curPos));
+                //float3 light = (S - S * transmittance) /max(extinction,0.0001);
                 
-                float atten = transmittance * GetLightAttenuation(curPos) * _Intensity * phase * stepSize;
-                float3 light = atten;
-                intensity += light;
+                float3 light = transmittance * S * _Intensity * stepSize;
+                //totalRadiance += light * totalTransmittance * stepSize;
+                totalRadiance += light;
+                //totalTransmittance *= transmittance;
+
             }
-            //float testAtten = GetLightAttenuation(startPos);
-
-            //intensity /= 64;
-
-
-            //return float4(intensity,1);
-            //return float4(mask,0,0,1);
-
-            float4 cameraColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,i.uv);
-            return float4(intensity,1) * _ColorTint;
+            return float4(totalRadiance,1);
         }
 
         //双边滤波
@@ -479,8 +516,8 @@
             float4 sourceColor = SAMPLE_TEXTURE2D(_GrabTexture, sampler_LinearClamp,i.uv);
 
             float depth =  LinearEyeDepth(SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture,sampler_CameraDepthTexture,i.screen_uv.xy), _ZBufferParams);
-        
-            float transmittance = exp(-depth * _Extinction);
+            depth = min(depth, MAX_RAY_LENGTH);
+            float transmittance = exp(-depth * _Extinction * 2);
             float4 bluredColor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp,i.uv);
             return bluredColor + sourceColor * transmittance;
 

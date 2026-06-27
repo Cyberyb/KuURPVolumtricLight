@@ -12,7 +12,7 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     [Header("光照设置")]
     public ColorParameter _LightTint = new ColorParameter(Color.white, true);//如果有两个true,则为HDR设置
     public ClampedFloatParameter _LightIntensity = new ClampedFloatParameter(0f, 0f,5f);
-    public ClampedIntParameter _StepTimes = new ClampedIntParameter(0,0,128);
+    public ClampedIntParameter _StepTimes = new ClampedIntParameter(0,0,512);
     public ClampedFloatParameter _PhaseG = new ClampedFloatParameter(0f, -1f, 1f);
     public ClampedFloatParameter _Extinction = new ClampedFloatParameter(0.7f, 0f, 1f);
 
@@ -24,25 +24,29 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     public ClampedFloatParameter _RangeSigma = new ClampedFloatParameter(0.5f,0.0f,3f);
 
     [Header("体素雾空间设置")]
+    public ClampedIntParameter _GridPixelSize = new ClampedIntParameter(8, 2, 16);
+    public ClampedIntParameter _GridSizeZ = new ClampedIntParameter(64, 16, 256);
     public ClampedFloatParameter _DepthFactor = new ClampedFloatParameter(1.0f, 0.01f, 5.0f);
     public ClampedFloatParameter _FarPlane = new ClampedFloatParameter(128.0f, 1.0f, 1280.0f);
     public Vector4Parameter _VolumeColor = new Vector4Parameter(new Vector4(0.2f, 0.6f, 1.0f, 1.0f));
 
-    [Header("体素雾渲染纹理设置")]
-    public RenderTextureParameter _VolumeTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _IntegratedTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _ScatteringTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _PrevScatteringTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _LowPrevScatteringTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _ScreenIntegratedTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _LightGridsTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _DebugTexture = new RenderTextureParameter(null);
-    public RenderTextureParameter _DebugTexture2 = new RenderTextureParameter(null);
+    // [Header("体素雾渲染纹理设置")]
+    // public RenderTextureParameter _VolumeTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _IntegratedTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _ScatteringTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _PrevScatteringTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _LowPrevScatteringTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _ScreenIntegratedTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _LightGridsTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _DebugTexture = new RenderTextureParameter(null);
+    // public RenderTextureParameter _DebugTexture2 = new RenderTextureParameter(null);
 
     [Header("体素雾属性设置")]
     public BoolParameter _UseFroxel = new BoolParameter(true);
-    public BoolParameter _UseScreenIntergrated = new BoolParameter(false);
+    //public BoolParameter _UseScreenIntergrated = new BoolParameter(false);
     public BoolParameter _UseTemporalReproject = new BoolParameter(true);
+
+    public BoolParameter _UseAdaptiveTAA = new BoolParameter(true);
     public ClampedFloatParameter _GlobalFogDensity = new ClampedFloatParameter(1.0f, 0.001f, 2.0f);
     public ClampedFloatParameter _HeightFallOff = new ClampedFloatParameter(0.5f, -5.0f, 5.0f);
     public ClampedFloatParameter _FogBaseHeight = new ClampedFloatParameter(0.0f, -100.0f, 100.0f);
@@ -51,6 +55,8 @@ public class VolumeLight_Volume : VolumeComponent, IPostProcessComponent
     public Vector3Parameter _GlobalScatter = new Vector3Parameter(new Vector3(0.2f,0.3f,1.0f));
     public ClampedFloatParameter _GlobalAbsorb = new ClampedFloatParameter(0.2f, 0.001f, 1.0f);
     public ColorParameter _GlobalAlbedo = new ColorParameter(new Color(0.2f,0.3f,0.6f));
+    public ClampedFloatParameter _SunLightScatterIntensity = new ClampedFloatParameter(1.0f, 1.0f, 10.0f);
+    public ClampedFloatParameter _AddLightScatterIntensity = new ClampedFloatParameter(1.0f, 1.0f, 10.0f);
     public ClampedFloatParameter _GlobalExtinction = new ClampedFloatParameter(0.1f, 0.0f, 1.0f);
     public ClampedFloatParameter _ReprojectWeight = new ClampedFloatParameter(0.8f,0.0f,1.0f);
 
